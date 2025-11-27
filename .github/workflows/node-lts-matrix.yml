@@ -1,0 +1,38 @@
+name: Node.js LTS Matrix
+
+on:
+  workflow_call:
+    inputs:
+      output-type:
+        description: 'Type of Node.js versions to output (lts, all, current, etc.)'
+        required: false
+        type: string
+        default: 'lts'
+    outputs:
+      versions:
+        description: 'Matrix of Node.js versions'
+        value: ${{ jobs.prepare_matrix.outputs.versions }}
+
+jobs:
+  prepare_matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.set-output.outputs.versions }}
+    steps:
+      - name: Select LTS versions of Node.js
+        id: generate-matrix
+        uses: msimerson/node-lts-versions@v1
+
+      - name: Set output based on type
+        id: set-output
+        run: |
+          if [ "${{ inputs.output-type }}" == "lts" ]; then
+            echo "versions=${{ steps.generate-matrix.outputs.lts }}" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.output-type }}" == "all" ]; then
+            echo "versions=${{ steps.generate-matrix.outputs.all }}" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.output-type }}" == "current" ]; then
+            echo "versions=${{ steps.generate-matrix.outputs.current }}" >> $GITHUB_OUTPUT
+          else
+            echo "versions=${{ steps.generate-matrix.outputs.lts }}" >> $GITHUB_OUTPUT
+          fi
+
