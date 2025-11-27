@@ -1,0 +1,23 @@
+name: Socket.io Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      fail-on-issues:
+        description: 'Whether to fail the workflow if security issues are found'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  socketio-scan:
+    name: Socket.io Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Socket.io Security Scan
+        uses: socketsecurity/actions@v1
+        with:
+          fail-on-issues: ${{ inputs.fail-on-issues }}

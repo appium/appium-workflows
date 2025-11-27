@@ -1,0 +1,21 @@
+name: Conventional Commits
+
+on:
+  workflow_call:
+    inputs:
+      config-preset:
+        description: 'Conventional Commits config preset (e.g., angular, atom, eslint)'
+        required: false
+        type: string
+        default: 'angular'
+
+jobs:
+  conventional-pr-check:
+    name: https://www.conventionalcommits.org
+    runs-on: ubuntu-latest
+    steps:
+      - uses: beemojs/conventional-pr-action@v3
+        with:
+          config-preset: ${{ inputs.config-preset }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
