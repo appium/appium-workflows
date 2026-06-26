@@ -4,10 +4,10 @@ Shared GitHub Actions Workflows
 ## Workflows
 
 ### pr-title.yml
-Validates PR titles against Conventional Commits format.
+Validates PR titles against the Conventional Commits format.
 
 **Inputs:**
-- `config-preset` (string, default: `angular`) - Conventional Commits preset
+- `config-preset` (string, default: `angular`) - Deprecated compatibility input; the workflow validates the Conventional Commits spec directly.
 
 ### node-lts-matrix.yml
 Generates a matrix of Node.js LTS versions for testing.
