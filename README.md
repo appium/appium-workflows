@@ -23,7 +23,6 @@ Refreshes [repo-graph artifacts](https://github.com/James-Chahwan/repo-graph) wh
 
 **Inputs:**
 - `repo-root` (string, default: `.`) - Working directory for the workflow.
-- `watch-paths` (string, default: `lib/**/*.ts`) - Newline-delimited globs that trigger the workflow.
 - `branch-name` (string, default: `chore/update-repo-graph`) - Branch used for the graph PR.
 - `pr-title` (string, default: `chore: update repo graph`) - PR title.
 - `pr-body` (string, default: `Automated repo graph refresh generated from source changes.`) - PR body.
