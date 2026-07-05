@@ -38,7 +38,4 @@ jobs:
     uses: appium/appium-workflows/.github/workflows/repo-graph-update.yml@main
     with:
       repo-root: .
-      watch-paths: |
-        lib/**/*.ts
-        tests/**/*.ts
 ```
