@@ -24,9 +24,10 @@ Generates a matrix of Node.js LTS versions for testing.
 Stages a production-only, `bundleDependencies`-enabled copy of the current npm package and
 publishes it - replacing the pinning guarantee `npm-shrinkwrap.json` used to provide before npm
 v12 removed shrinkwrap support entirely.
-Every dependency not named in `pinned-packages` gets bundled (its resolved tree embedded
-verbatim in the tarball); named ones are exact-pinned instead and left for the consumer's own
-`npm install` to fetch - use this for anything bundling would be wrong for, most commonly
+Every dependency is exact-pinned to the version actually resolved; on top of that, every
+dependency not named in `unbundled-packages` also gets bundled (its resolved tree embedded
+verbatim in the tarball). Named ones are left for the consumer's own `npm install` to fetch
+that pinned version normally - use this for anything bundling would be wrong for, most commonly
 native/platform-specific packages (bundling would ship whatever binary the CI runner resolved
 for its own OS/arch and break every other platform).
 
@@ -37,14 +38,14 @@ OIDC trusted publishing (composite actions can't request permissions beyond what
 job already has).
 
 **Inputs:**
-- `pinned-packages` (string, default: `''`) - Space-separated dependency names to exclude from bundling and exact-pin instead.
+- `unbundled-packages` (string, default: `''`) - Space-separated dependency names to exclude from bundling.
 
 **Usage:**
 ```yaml
 - uses: appium/appium-workflows/.github/actions/publish-npm-bundle@main
   if: env.PREV_VERSION != env.NEW_VERSION
   with:
-    pinned-packages: koffi
+    unbundled-packages: koffi
 ```
 
 ## Usage

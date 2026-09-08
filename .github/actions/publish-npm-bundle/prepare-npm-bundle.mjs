@@ -4,7 +4,7 @@
  * working directory into `.release-pkg` and installs its production tree - replacing the
  * pinning guarantee `npm-shrinkwrap.json` used to provide.
  *
- * Usage: prepare-npm-bundle.mjs <pinnedPackageName...>
+ * Usage: prepare-npm-bundle.mjs <unbundledPackageName...>
  *
  * Every dependency (dependencies and optionalDependencies alike) gets exact-pinned to the
  * version actually resolved. On top of that, every dependency not named on the command line
@@ -155,7 +155,7 @@ async function stageFiles(pkg) {
 }
 
 async function main() {
-  const pinnedNames = new Set(process.argv.slice(2));
+  const unbundledNames = new Set(process.argv.slice(2));
   const pkg = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8'));
 
   await stageFiles(pkg);
@@ -165,7 +165,7 @@ async function main() {
   stagedPkg.bundleDependencies = [
     ...Object.keys(pkg.dependencies ?? {}),
     ...Object.keys(pkg.optionalDependencies ?? {}),
-  ].filter((name) => !pinnedNames.has(name));
+  ].filter((name) => !unbundledNames.has(name));
 
   // exact-pin every dependency, bundled or not: bundled ones are only enforced by npm's own
   // install, so this keeps the declared range accurate for other tooling (e.g. Yarn doesn't

@@ -6,13 +6,14 @@ description: >
   has already been built (its "files" entries need to exist on disk) and after any version
   bump, from the repo root.
 inputs:
-  pinned-packages:
+  unbundled-packages:
     description: >
-      Space-separated dependency names to exclude from bundling and exact-pin instead
-      (wherever declared - dependencies or optionalDependencies), left for the consumer's own
-      npm install to fetch normally. Use for anything bundling would be wrong for - most
-      commonly native/platform-specific packages, where bundling would ship whatever binary
-      the CI runner resolved for its own OS/arch and break every other platform.
+      Space-separated dependency names to exclude from bundling (wherever declared -
+      dependencies or optionalDependencies), left for the consumer's own npm install to fetch
+      normally instead - every dependency is exact-pinned regardless. Use for anything
+      bundling would be wrong for - most commonly native/platform-specific packages, where
+      bundling would ship whatever binary the CI runner resolved for its own OS/arch and break
+      every other platform.
     required: false
     default: ''
 runs:
@@ -20,7 +21,7 @@ runs:
   steps:
     - name: Stage bundled npm package
       shell: bash
-      run: node "${{ github.action_path }}/prepare-npm-bundle.mjs" ${{ inputs.pinned-packages }}
+      run: node "${{ github.action_path }}/prepare-npm-bundle.mjs" ${{ inputs.unbundled-packages }}
     - name: Publish bundled package
       shell: bash
       working-directory: .release-pkg
