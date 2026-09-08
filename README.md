@@ -23,7 +23,7 @@ Generates a matrix of Node.js LTS versions for testing.
 ### publish-npm-bundle
 Stages a production-only, `bundleDependencies`-enabled copy of the current npm package and
 publishes it - replacing the pinning guarantee `npm-shrinkwrap.json` used to provide before npm
-v12 removed shrinkwrap support ([appium/appium#22736](https://github.com/appium/appium/issues/22736)).
+v12 removed shrinkwrap support entirely.
 Every dependency not named in `pinned-packages` gets bundled (its resolved tree embedded
 verbatim in the tarball); named ones are exact-pinned instead and left for the consumer's own
 `npm install` to fetch - use this for anything bundling would be wrong for, most commonly

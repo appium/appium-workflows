@@ -17,7 +17,6 @@
  * Dependency-free by design: this runs from wherever the action itself is checked out, not
  * from the calling repo's own node_modules, so it can't rely on packages like `asyncbox` or
  * `semver` being resolvable.
- * @see https://github.com/appium/appium/issues/22736
  */
 
 import {execFile} from 'node:child_process';

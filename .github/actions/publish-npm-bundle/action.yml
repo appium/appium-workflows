@@ -2,9 +2,9 @@ name: 'Publish bundled npm package'
 description: >
   Stages a production-only, bundleDependencies-enabled copy of the current npm package and
   publishes it to the npm registry - replacing the pinning guarantee npm-shrinkwrap.json used
-  to provide before npm v12 removed shrinkwrap support (appium/appium#22736). Must run after
-  the package has already been built (its "files" entries need to exist on disk) and after any
-  version bump, from the repo root.
+  to provide before npm v12 removed shrinkwrap support entirely. Must run after the package
+  has already been built (its "files" entries need to exist on disk) and after any version
+  bump, from the repo root.
 inputs:
   pinned-packages:
     description: >
