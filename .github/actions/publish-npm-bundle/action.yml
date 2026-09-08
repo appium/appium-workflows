@@ -1,0 +1,27 @@
+name: 'Publish bundled npm package'
+description: >
+  Stages a production-only, bundleDependencies-enabled copy of the current npm package and
+  publishes it to the npm registry - replacing the pinning guarantee npm-shrinkwrap.json used
+  to provide before npm v12 removed shrinkwrap support (appium/appium#22736). Must run after
+  the package has already been built (its "files" entries need to exist on disk) and after any
+  version bump, from the repo root.
+inputs:
+  pinned-packages:
+    description: >
+      Space-separated dependency names to exclude from bundling and exact-pin instead
+      (wherever declared - dependencies or optionalDependencies), left for the consumer's own
+      npm install to fetch normally. Use for anything bundling would be wrong for - most
+      commonly native/platform-specific packages, where bundling would ship whatever binary
+      the CI runner resolved for its own OS/arch and break every other platform.
+    required: false
+    default: ''
+runs:
+  using: 'composite'
+  steps:
+    - name: Stage bundled npm package
+      shell: bash
+      run: node "${{ github.action_path }}/prepare-npm-bundle.mjs" ${{ inputs.pinned-packages }}
+    - name: Publish bundled package
+      shell: bash
+      working-directory: .release-pkg
+      run: npm publish --ignore-scripts
