@@ -1,18 +1,24 @@
 #!/usr/bin/env node
 /**
  * Stages a production-only, `bundleDependencies`-enabled copy of the package in the current
- * working directory into `.release-pkg` and installs its production tree - replacing the
+ * working directory into `.release-pkg/package.tgz`, ready for `npm publish` - replacing the
  * pinning guarantee `npm-shrinkwrap.json` used to provide.
  *
- * Usage: prepare-npm-bundle.mjs <unbundledPackageName...>
+ * Usage: UNBUNDLED_PACKAGES="name1 name2" prepare-npm-bundle.mjs
  *
  * Every dependency (dependencies and optionalDependencies alike) gets exact-pinned to the
- * version actually resolved. On top of that, every dependency not named on the command line
- * also gets bundled (its resolved tree embedded verbatim in the tarball). Named packages are
- * excluded from bundling, left for the consumer's own npm install to fetch that exact pinned
- * version normally. Use this for anything bundling would be wrong for - most commonly
- * native/platform-specific packages, where bundling would ship whatever binary the CI runner
- * resolved for its own OS/arch and break every other platform.
+ * version actually resolved. On top of that, every dependency not named in UNBUNDLED_PACKAGES
+ * also gets bundled (its resolved tree embedded verbatim in the tarball, taken from this
+ * package's own already-installed node_modules - the same tree CI tested against, via
+ * `npm pack` itself rather than a fresh re-resolving install). Named packages are excluded from
+ * bundling, left for the consumer's own npm install to fetch that exact pinned version normally.
+ * Use this for anything bundling would be wrong for - most commonly native/platform-specific
+ * packages, where bundling would ship whatever binary the CI runner resolved for its own
+ * OS/arch and break every other platform.
+ *
+ * Fails fast if an excluded package is unavoidably reachable as a transitive dependency of a
+ * bundled one - npm would embed it anyway from that ancestor's own resolved tree, silently
+ * defeating the exclusion.
  *
  * Dependency-free by design: this runs from wherever the action itself is checked out, not
  * from the calling repo's own node_modules, so it can't rely on packages like `asyncbox` or
@@ -20,7 +26,7 @@
  */
 
 import {execFile} from 'node:child_process';
-import {cp, mkdir, readdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {promisify} from 'node:util';
 
@@ -29,8 +35,7 @@ const RESOLVE_CONCURRENCY = 5;
 const execFileAsync = promisify(execFile);
 const ROOT = process.cwd();
 const STAGING_DIR = path.join(ROOT, '.release-pkg');
-// npm always includes these in a published tarball regardless of the files field
-const ALWAYS_INCLUDED_RE = /^(readme|licen[sc]e)(\.|$)/i;
+const BUNDLE_FILENAME = 'package.tgz';
 
 /**
  * Runs `mapper` over `items` with at most `concurrency` in flight at once.
@@ -65,6 +70,44 @@ function parseVersion(version) {
 }
 
 /**
+ * Compares two dot-separated semver prerelease strings per semver precedence rules: identifiers
+ * are compared field by field, numeric fields compare numerically and always sort below
+ * alphanumeric fields, alphanumeric fields compare lexically, and a prerelease with more fields
+ * outranks an otherwise-equal prefix with fewer.
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} positive if `a` > `b`
+ */
+function comparePrerelease(a, b) {
+  if (a === b) {
+    return 0;
+  }
+  const aParts = a.split('.');
+  const bParts = b.split('.');
+  for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+    if (aParts[i] === undefined) {
+      return -1;
+    }
+    if (bParts[i] === undefined) {
+      return 1;
+    }
+    const aIsNum = /^\d+$/.test(aParts[i]);
+    const bIsNum = /^\d+$/.test(bParts[i]);
+    if (aIsNum && bIsNum) {
+      const diff = Number(aParts[i]) - Number(bParts[i]);
+      if (diff !== 0) {
+        return diff;
+      }
+    } else if (aIsNum !== bIsNum) {
+      return aIsNum ? -1 : 1;
+    } else if (aParts[i] !== bParts[i]) {
+      return aParts[i] < bParts[i] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+/**
  * @param {{parts: number[], prerelease: string|null}} a
  * @param {{parts: number[], prerelease: string|null}} b
  * @returns {number} positive if `a` > `b`, per semver precedence (no prerelease beats any prerelease)
@@ -81,7 +124,7 @@ function compareVersions(a, b) {
   if (a.prerelease === null || b.prerelease === null) {
     return a.prerelease === null ? 1 : -1;
   }
-  return a.prerelease < b.prerelease ? -1 : 1;
+  return comparePrerelease(a.prerelease, b.prerelease);
 }
 
 /**
@@ -130,42 +173,112 @@ async function resolveDependencyVersion(name, range) {
 }
 
 /**
- * Resets `.release-pkg` and copies everything a real `npm publish` from `ROOT` would pack:
- * the declared `files` entries plus the README, LICENSE, and "bin" targets npm always includes.
- * @param {Record<string, any>} pkg
- * @returns {Promise<void>}
+ * The production dependency tree npm actually resolved into `ROOT/node_modules` (the same tree
+ * CI tested against), as `npm ls --json` reports it. npm exits non-zero whenever anything in the
+ * tree is missing or extraneous (e.g. an optional dependency unsupported on this platform), but
+ * still emits a usable tree on stdout, so a failed exit is only fatal if stdout is empty.
+ * @returns {Promise<Record<string, any>>}
  */
-async function stageFiles(pkg) {
-  await rm(STAGING_DIR, {recursive: true, force: true});
-  await mkdir(STAGING_DIR, {recursive: true});
-
-  // negated entries (e.g. "!scripts/ci") are for npm's own files-field packing logic, not paths to copy
-  /** @type {string[]} */
-  const fileEntries = pkg.files ?? [];
-  for (const entry of fileEntries.filter((f) => !f.startsWith('!'))) {
-    await cp(path.join(ROOT, entry), path.join(STAGING_DIR, entry), {recursive: true});
-  }
-  // README*/LICENSE* and "bin" entries are always packed by npm even if absent from files
-  for (const name of (await readdir(ROOT)).filter((n) => ALWAYS_INCLUDED_RE.test(n))) {
-    await cp(path.join(ROOT, name), path.join(STAGING_DIR, name), {recursive: true});
-  }
-  for (const binPath of Object.values(pkg.bin ?? {})) {
-    await cp(path.join(ROOT, binPath), path.join(STAGING_DIR, binPath), {recursive: true});
+async function getInstalledDependencyGraph() {
+  try {
+    const {stdout} = await execFileAsync('npm', ['ls', '--all', '--omit=dev', '--omit=peer', '--json'], {
+      cwd: ROOT,
+    });
+    return JSON.parse(stdout).dependencies ?? {};
+  } catch (err) {
+    if (err.stdout) {
+      return JSON.parse(err.stdout).dependencies ?? {};
+    }
+    throw err;
   }
 }
 
+/**
+ * All package names reachable (transitively) from `depsNode`, per `npm ls`'s nested
+ * `dependencies` shape.
+ * @param {Record<string, any>|undefined} depsNode
+ * @param {Set<string>} [seen]
+ * @returns {Set<string>}
+ */
+function collectTransitiveNames(depsNode, seen = new Set()) {
+  for (const [name, info] of Object.entries(depsNode ?? {})) {
+    if (seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    collectTransitiveNames(info.dependencies, seen);
+  }
+  return seen;
+}
+
+/**
+ * Rejects exclusions npm can't actually honor: if a bundled package transitively depends on an
+ * excluded one, npm's packer will still embed it as part of the bundled package's own resolved
+ * subtree, regardless of it being left out of `bundleDependencies`.
+ * @param {string[]} bundledNames
+ * @param {Set<string>} unbundledNames
+ * @returns {Promise<void>}
+ */
+async function assertUnbundledDepsAreHonorable(bundledNames, unbundledNames) {
+  if (unbundledNames.size === 0) {
+    return;
+  }
+  const graph = await getInstalledDependencyGraph();
+  for (const bundledName of bundledNames) {
+    const transitiveNames = collectTransitiveNames(graph[bundledName]?.dependencies);
+    for (const unbundledName of unbundledNames) {
+      if (transitiveNames.has(unbundledName)) {
+        throw new Error(
+          `"${unbundledName}" is listed as an unbundled package, but bundled package "${bundledName}" ` +
+            `transitively depends on it - npm would still embed it inside "${bundledName}"'s bundle, ` +
+            `silently defeating the exclusion. Exclude "${bundledName}" too, or restructure the dependency.`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Packs `pkg` (the caller's package.json, already pinned and `bundleDependencies`-enabled) with
+ * `npm pack`, so file selection and bundled-dependency embedding both come straight from npm's
+ * own packer - reading `ROOT/node_modules` exactly as CI resolved it - instead of being
+ * approximated here. The result is normalized to a fixed filename for the publish step.
+ * @returns {Promise<void>}
+ */
+async function packBundle() {
+  await rm(STAGING_DIR, {recursive: true, force: true});
+  await mkdir(STAGING_DIR, {recursive: true});
+  const {stdout} = await execFileAsync(
+    'npm',
+    ['pack', '--ignore-scripts', '--pack-destination', STAGING_DIR, '--json'],
+    {cwd: ROOT},
+  );
+  const [{filename}] = JSON.parse(stdout);
+  await rename(path.join(STAGING_DIR, filename), path.join(STAGING_DIR, BUNDLE_FILENAME));
+}
+
 async function main() {
-  const unbundledNames = new Set(process.argv.slice(2));
-  const pkg = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8'));
+  const unbundledNames = new Set((process.env.UNBUNDLED_PACKAGES ?? '').split(/\s+/).filter(Boolean));
+  const originalPkgRaw = await readFile(path.join(ROOT, 'package.json'), 'utf8');
+  const pkg = JSON.parse(originalPkgRaw);
 
-  await stageFiles(pkg);
+  if (!Array.isArray(pkg.files) || pkg.files.length === 0) {
+    throw new Error(
+      'package.json must declare a non-empty "files" field - without it there is no reliable way to know ' +
+        'what belongs in the published bundle',
+    );
+  }
 
-  // strip devDependencies/scripts - staging only ever gets a --omit=dev --omit=peer --ignore-scripts install
-  const {devDependencies: _devDependencies, scripts: _scripts, ...stagedPkg} = pkg;
-  stagedPkg.bundleDependencies = [
+  const bundledNames = [
     ...Object.keys(pkg.dependencies ?? {}),
     ...Object.keys(pkg.optionalDependencies ?? {}),
   ].filter((name) => !unbundledNames.has(name));
+
+  await assertUnbundledDepsAreHonorable(bundledNames, unbundledNames);
+
+  // strip devDependencies/scripts - the published bundle only ever ships the production tree
+  const {devDependencies: _devDependencies, scripts: _scripts, ...stagedPkg} = pkg;
+  stagedPkg.bundleDependencies = bundledNames;
 
   // exact-pin every dependency, bundled or not: bundled ones are only enforced by npm's own
   // install, so this keeps the declared range accurate for other tooling (e.g. Yarn doesn't
@@ -181,9 +294,14 @@ async function main() {
     RESOLVE_CONCURRENCY,
   );
 
-  await writeFile(path.join(STAGING_DIR, 'package.json'), `${JSON.stringify(stagedPkg, null, 2)}\n`);
-
-  await execFileAsync('npm', ['install', '--omit=dev', '--omit=peer', '--ignore-scripts'], {cwd: STAGING_DIR});
+  // temporarily rewrite package.json so `npm pack` bundles from the caller's already-resolved
+  // node_modules and applies its own "files" selection, then restore the original
+  await writeFile(path.join(ROOT, 'package.json'), `${JSON.stringify(stagedPkg, null, 2)}\n`);
+  try {
+    await packBundle();
+  } finally {
+    await writeFile(path.join(ROOT, 'package.json'), originalPkgRaw);
+  }
 }
 
 await main();

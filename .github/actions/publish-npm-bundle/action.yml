@@ -21,8 +21,10 @@ runs:
   steps:
     - name: Stage bundled npm package
       shell: bash
-      run: node "${{ github.action_path }}/prepare-npm-bundle.mjs" ${{ inputs.unbundled-packages }}
+      env:
+        UNBUNDLED_PACKAGES: ${{ inputs.unbundled-packages }}
+      run: node "${{ github.action_path }}/prepare-npm-bundle.mjs"
     - name: Publish bundled package
       shell: bash
       working-directory: .release-pkg
-      run: npm publish --ignore-scripts
+      run: npm publish --ignore-scripts package.tgz
