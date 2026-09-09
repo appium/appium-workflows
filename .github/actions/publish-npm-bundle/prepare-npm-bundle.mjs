@@ -58,91 +58,104 @@ async function mapWithConcurrency(items, mapper, concurrency) {
   return results;
 }
 
-const VERSION_RE = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?/;
-
 /**
- * @param {string} version
- * @returns {{parts: number[], prerelease: string|null}|null}
+ * A parsed `major.minor.patch(-prerelease)?` semver string, comparable by precedence.
  */
-function parseVersion(version) {
-  const match = VERSION_RE.exec(version);
-  return match ? {parts: [+match[1], +match[2], +match[3]], prerelease: match[4] ?? null} : null;
-}
+class Version {
+  static #RE = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?/;
 
-/**
- * Compares two dot-separated semver prerelease strings per semver precedence rules: identifiers
- * are compared field by field, numeric fields compare numerically and always sort below
- * alphanumeric fields, alphanumeric fields compare lexically, and a prerelease with more fields
- * outranks an otherwise-equal prefix with fewer.
- * @param {string} a
- * @param {string} b
- * @returns {number} positive if `a` > `b`
- */
-function comparePrerelease(a, b) {
-  if (a === b) {
-    return 0;
+  /**
+   * @param {number[]} parts
+   * @param {string|null} prerelease
+   */
+  constructor(parts, prerelease) {
+    this.parts = parts;
+    this.prerelease = prerelease;
   }
-  const aParts = a.split('.');
-  const bParts = b.split('.');
-  for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-    if (aParts[i] === undefined) {
-      return -1;
-    }
-    if (bParts[i] === undefined) {
-      return 1;
-    }
-    const aIsNum = /^\d+$/.test(aParts[i]);
-    const bIsNum = /^\d+$/.test(bParts[i]);
-    if (aIsNum && bIsNum) {
-      const diff = Number(aParts[i]) - Number(bParts[i]);
-      if (diff !== 0) {
-        return diff;
+
+  /**
+   * @param {string} version
+   * @returns {Version|null}
+   */
+  static parse(version) {
+    const match = Version.#RE.exec(version);
+    return match ? new Version([+match[1], +match[2], +match[3]], match[4] ?? null) : null;
+  }
+
+  /**
+   * @param {Version} other
+   * @returns {number} positive if `this` > `other`, per semver precedence (no prerelease beats any prerelease)
+   */
+  compareTo(other) {
+    for (let i = 0; i < 3; i++) {
+      if (this.parts[i] !== other.parts[i]) {
+        return this.parts[i] - other.parts[i];
       }
-    } else if (aIsNum !== bIsNum) {
-      return aIsNum ? -1 : 1;
-    } else if (aParts[i] !== bParts[i]) {
-      return aParts[i] < bParts[i] ? -1 : 1;
     }
+    if (this.prerelease === other.prerelease) {
+      return 0;
+    }
+    if (this.prerelease === null || other.prerelease === null) {
+      return this.prerelease === null ? 1 : -1;
+    }
+    return Version.#comparePrerelease(this.prerelease, other.prerelease);
   }
-  return 0;
-}
 
-/**
- * @param {{parts: number[], prerelease: string|null}} a
- * @param {{parts: number[], prerelease: string|null}} b
- * @returns {number} positive if `a` > `b`, per semver precedence (no prerelease beats any prerelease)
- */
-function compareVersions(a, b) {
-  for (let i = 0; i < 3; i++) {
-    if (a.parts[i] !== b.parts[i]) {
-      return a.parts[i] - b.parts[i];
+  /**
+   * Compares two dot-separated semver prerelease strings per semver precedence rules: identifiers
+   * are compared field by field, numeric fields compare numerically and always sort below
+   * alphanumeric fields, alphanumeric fields compare lexically, and a prerelease with more fields
+   * outranks an otherwise-equal prefix with fewer.
+   * @param {string} a
+   * @param {string} b
+   * @returns {number} positive if `a` > `b`
+   */
+  static #comparePrerelease(a, b) {
+    if (a === b) {
+      return 0;
     }
-  }
-  if (a.prerelease === b.prerelease) {
+    const aParts = a.split('.');
+    const bParts = b.split('.');
+    for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+      if (aParts[i] === undefined) {
+        return -1;
+      }
+      if (bParts[i] === undefined) {
+        return 1;
+      }
+      const aIsNum = /^\d+$/.test(aParts[i]);
+      const bIsNum = /^\d+$/.test(bParts[i]);
+      if (aIsNum && bIsNum) {
+        const diff = Number(aParts[i]) - Number(bParts[i]);
+        if (diff !== 0) {
+          return diff;
+        }
+      } else if (aIsNum !== bIsNum) {
+        return aIsNum ? -1 : 1;
+      } else if (aParts[i] !== bParts[i]) {
+        return aParts[i] < bParts[i] ? -1 : 1;
+      }
+    }
     return 0;
   }
-  if (a.prerelease === null || b.prerelease === null) {
-    return a.prerelease === null ? 1 : -1;
-  }
-  return comparePrerelease(a.prerelease, b.prerelease);
-}
 
-/**
- * Highest of `versions` (all assumed valid `major.minor.patch(-prerelease)?` strings).
- * @param {string[]} versions
- * @returns {string|null}
- */
-function maxVersion(versions) {
-  let best = null;
-  let bestParsed = null;
-  for (const version of versions) {
-    const parsed = parseVersion(version);
-    if (parsed && (!bestParsed || compareVersions(parsed, bestParsed) > 0)) {
-      best = version;
-      bestParsed = parsed;
+  /**
+   * Highest of `versions` (all assumed valid `major.minor.patch(-prerelease)?` strings).
+   * @param {string[]} versions
+   * @returns {string|null}
+   */
+  static max(versions) {
+    let best = null;
+    let bestParsed = null;
+    for (const version of versions) {
+      const parsed = Version.parse(version);
+      if (parsed && (!bestParsed || parsed.compareTo(bestParsed) > 0)) {
+        best = version;
+        bestParsed = parsed;
+      }
     }
+    return best;
   }
-  return best;
 }
 
 /**
@@ -162,7 +175,7 @@ async function resolveDependencyVersion(name, range) {
   try {
     const {stdout} = await execFileAsync('npm', ['view', `${name}@${range}`, 'version', '--json']);
     const parsed = JSON.parse(stdout);
-    const resolved = maxVersion(Array.isArray(parsed) ? parsed : [parsed]);
+    const resolved = Version.max(Array.isArray(parsed) ? parsed : [parsed]);
     if (resolved) {
       return resolved;
     }
