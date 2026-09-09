@@ -39,7 +39,6 @@ job already has).
 
 **Inputs:**
 - `unbundled-packages` (string, default: `''`) - Space-separated dependency names to exclude from bundling.
-- `bundle-filename` (string, default: `'package.tgz'`) - Filename the staged bundle tarball is written to inside `.release-pkg`, and published from.
 
 **Usage:**
 ```yaml
