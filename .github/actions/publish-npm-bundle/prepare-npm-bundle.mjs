@@ -31,6 +31,9 @@ import path from 'node:path';
 import {promisify} from 'node:util';
 
 const RESOLVE_CONCURRENCY = 5;
+// npm ls/pack --json emit one entry per file (including every bundled dependency's own files),
+// easily exceeding execFile's default 1 MiB stdout buffer well before the tarball itself gets big
+const EXEC_MAX_BUFFER = 200 * 1024 * 1024;
 
 const execFileAsync = promisify(execFile);
 const ROOT = process.cwd();
@@ -187,16 +190,19 @@ async function resolveDependencyVersion(name, range) {
 
 /**
  * The production dependency tree npm actually resolved into `ROOT/node_modules` (the same tree
- * CI tested against), as `npm ls --json` reports it. npm exits non-zero whenever anything in the
- * tree is missing or extraneous (e.g. an optional dependency unsupported on this platform), but
- * still emits a usable tree on stdout, so a failed exit is only fatal if stdout is empty.
+ * CI tested against), as `npm ls --long --json` reports it. `--long` adds each node's own
+ * install `path` and its raw `_dependencies` map (its own declared `dependencies` and
+ * `optionalDependencies`, merged - never `peerDependencies`), which is what npm's bundler
+ * actually follows and what distinguishes same-named packages resolved to different versions at
+ * different points in the tree. npm exits non-zero whenever anything in the tree is missing or
+ * extraneous (e.g. an optional dependency unsupported on this platform), but still emits a usable
+ * tree on stdout, so a failed exit is only fatal if stdout is empty.
  * @returns {Promise<Record<string, any>>}
  */
 async function getInstalledDependencyGraph() {
+  const args = ['ls', '--all', '--omit=dev', '--omit=peer', '--long', '--json'];
   try {
-    const {stdout} = await execFileAsync('npm', ['ls', '--all', '--omit=dev', '--omit=peer', '--json'], {
-      cwd: ROOT,
-    });
+    const {stdout} = await execFileAsync('npm', args, {cwd: ROOT, maxBuffer: EXEC_MAX_BUFFER});
     return JSON.parse(stdout).dependencies ?? {};
   } catch (err) {
     if (err.stdout) {
@@ -207,45 +213,32 @@ async function getInstalledDependencyGraph() {
 }
 
 /**
- * The real (non-peer) dependency names the installed package `name` declares in its own
- * package.json. `npm ls`'s nested `dependencies` shape also nests a peer dependency under
- * whatever installed it, indistinguishable there from a real one - but npm's bundler only ever
- * follows a package's own `dependencies`/`optionalDependencies` fields, never its
- * `peerDependencies`, so this is what actually determines what gets embedded.
- * @param {string} name
- * @returns {Promise<Set<string>>}
+ * All package names reachable (transitively) from `node` by real dependency edges alone. Each
+ * `npm ls --long` node's `_dependencies` is the exact map of what that specific installed
+ * instance declares - so a child only counts if its name is a key there, which both excludes
+ * peer-only edges and, since `node` is a specific resolved instance rather than just a name,
+ * correctly follows same-named dependencies resolved to different versions at different points
+ * in the tree. `visitedPaths` (each instance's unique install path) guards against cycles
+ * without conflating distinct instances the way de-duping by name alone would.
+ * @param {Record<string, any>} node - an `npm ls --long --json` node
+ * @param {Set<string>} [reachableNames]
+ * @param {Set<string>} [visitedPaths]
+ * @returns {Set<string>}
  */
-async function getOwnDependencyNames(name) {
-  try {
-    const {dependencies, optionalDependencies} = JSON.parse(
-      await readFile(path.join(ROOT, 'node_modules', name, 'package.json'), 'utf8'),
-    );
-    return new Set([...Object.keys(dependencies ?? {}), ...Object.keys(optionalDependencies ?? {})]);
-  } catch {
-    return new Set();
+function collectTransitiveNames(node, reachableNames = new Set(), visitedPaths = new Set()) {
+  if (visitedPaths.has(node.path)) {
+    return reachableNames;
   }
-}
-
-/**
- * All package names reachable (transitively) from `parentName` by real dependency edges alone -
- * per `npm ls`'s nested `dependencies` shape, filtered against each package's own declared
- * `dependencies`/`optionalDependencies` so a peer edge that merely happens to be satisfied by an
- * installed package isn't mistaken for one npm would actually bundle.
- * @param {string} parentName
- * @param {Record<string, any>|undefined} depsNode
- * @param {Set<string>} [seen]
- * @returns {Promise<Set<string>>}
- */
-async function collectTransitiveNames(parentName, depsNode, seen = new Set()) {
-  const ownDependencyNames = await getOwnDependencyNames(parentName);
-  for (const [name, info] of Object.entries(depsNode ?? {})) {
-    if (seen.has(name) || !ownDependencyNames.has(name)) {
+  visitedPaths.add(node.path);
+  const ownDependencyNames = new Set(Object.keys(node._dependencies ?? {}));
+  for (const [name, childNode] of Object.entries(node.dependencies ?? {})) {
+    if (!ownDependencyNames.has(name)) {
       continue;
     }
-    seen.add(name);
-    await collectTransitiveNames(name, info.dependencies, seen);
+    reachableNames.add(name);
+    collectTransitiveNames(childNode, reachableNames, visitedPaths);
   }
-  return seen;
+  return reachableNames;
 }
 
 /**
@@ -262,7 +255,11 @@ async function assertUnbundledDepsAreHonorable(bundledNames, unbundledNames) {
   }
   const graph = await getInstalledDependencyGraph();
   for (const bundledName of bundledNames) {
-    const transitiveNames = await collectTransitiveNames(bundledName, graph[bundledName]?.dependencies);
+    const node = graph[bundledName];
+    if (!node) {
+      continue;
+    }
+    const transitiveNames = collectTransitiveNames(node);
     for (const unbundledName of unbundledNames) {
       if (transitiveNames.has(unbundledName)) {
         throw new Error(
@@ -288,7 +285,7 @@ async function packBundle() {
   const {stdout} = await execFileAsync(
     'npm',
     ['pack', '--ignore-scripts', '--pack-destination', STAGING_DIR, '--json'],
-    {cwd: ROOT},
+    {cwd: ROOT, maxBuffer: EXEC_MAX_BUFFER},
   );
   const [{filename}] = JSON.parse(stdout);
   await rename(path.join(STAGING_DIR, filename), path.join(STAGING_DIR, BUNDLE_FILENAME));
