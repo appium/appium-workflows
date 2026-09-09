@@ -207,19 +207,43 @@ async function getInstalledDependencyGraph() {
 }
 
 /**
- * All package names reachable (transitively) from `depsNode`, per `npm ls`'s nested
- * `dependencies` shape.
+ * The real (non-peer) dependency names the installed package `name` declares in its own
+ * package.json. `npm ls`'s nested `dependencies` shape also nests a peer dependency under
+ * whatever installed it, indistinguishable there from a real one - but npm's bundler only ever
+ * follows a package's own `dependencies`/`optionalDependencies` fields, never its
+ * `peerDependencies`, so this is what actually determines what gets embedded.
+ * @param {string} name
+ * @returns {Promise<Set<string>>}
+ */
+async function getOwnDependencyNames(name) {
+  try {
+    const {dependencies, optionalDependencies} = JSON.parse(
+      await readFile(path.join(ROOT, 'node_modules', name, 'package.json'), 'utf8'),
+    );
+    return new Set([...Object.keys(dependencies ?? {}), ...Object.keys(optionalDependencies ?? {})]);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * All package names reachable (transitively) from `parentName` by real dependency edges alone -
+ * per `npm ls`'s nested `dependencies` shape, filtered against each package's own declared
+ * `dependencies`/`optionalDependencies` so a peer edge that merely happens to be satisfied by an
+ * installed package isn't mistaken for one npm would actually bundle.
+ * @param {string} parentName
  * @param {Record<string, any>|undefined} depsNode
  * @param {Set<string>} [seen]
- * @returns {Set<string>}
+ * @returns {Promise<Set<string>>}
  */
-function collectTransitiveNames(depsNode, seen = new Set()) {
+async function collectTransitiveNames(parentName, depsNode, seen = new Set()) {
+  const ownDependencyNames = await getOwnDependencyNames(parentName);
   for (const [name, info] of Object.entries(depsNode ?? {})) {
-    if (seen.has(name)) {
+    if (seen.has(name) || !ownDependencyNames.has(name)) {
       continue;
     }
     seen.add(name);
-    collectTransitiveNames(info.dependencies, seen);
+    await collectTransitiveNames(name, info.dependencies, seen);
   }
   return seen;
 }
@@ -238,7 +262,7 @@ async function assertUnbundledDepsAreHonorable(bundledNames, unbundledNames) {
   }
   const graph = await getInstalledDependencyGraph();
   for (const bundledName of bundledNames) {
-    const transitiveNames = collectTransitiveNames(graph[bundledName]?.dependencies);
+    const transitiveNames = await collectTransitiveNames(bundledName, graph[bundledName]?.dependencies);
     for (const unbundledName of unbundledNames) {
       if (transitiveNames.has(unbundledName)) {
         throw new Error(
