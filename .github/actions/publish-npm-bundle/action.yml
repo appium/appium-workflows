@@ -16,6 +16,12 @@ inputs:
       every other platform.
     required: false
     default: ''
+  bundle-filename:
+    description: >
+      Filename the staged bundle tarball is written to inside `.release-pkg`, and published
+      from.
+    required: false
+    default: 'package.tgz'
 runs:
   using: 'composite'
   steps:
@@ -23,8 +29,11 @@ runs:
       shell: bash
       env:
         UNBUNDLED_PACKAGES: ${{ inputs.unbundled-packages }}
+        BUNDLE_FILENAME: ${{ inputs.bundle-filename }}
       run: node "${{ github.action_path }}/prepare-npm-bundle.mjs"
     - name: Publish bundled package
       shell: bash
       working-directory: .release-pkg
-      run: npm publish --ignore-scripts package.tgz
+      env:
+        BUNDLE_FILENAME: ${{ inputs.bundle-filename }}
+      run: npm publish --ignore-scripts "$BUNDLE_FILENAME"

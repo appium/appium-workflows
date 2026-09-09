@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * Stages a production-only, `bundleDependencies`-enabled copy of the package in the current
- * working directory into `.release-pkg/package.tgz`, ready for `npm publish` - replacing the
- * pinning guarantee `npm-shrinkwrap.json` used to provide.
+ * working directory into `.release-pkg/<BUNDLE_FILENAME>`, ready for `npm publish` - replacing
+ * the pinning guarantee `npm-shrinkwrap.json` used to provide.
  *
- * Usage: UNBUNDLED_PACKAGES="name1 name2" prepare-npm-bundle.mjs
+ * Usage: UNBUNDLED_PACKAGES="name1 name2" BUNDLE_FILENAME="package.tgz" prepare-npm-bundle.mjs
  *
  * Every dependency (dependencies and optionalDependencies alike) gets exact-pinned to the
  * version actually resolved. On top of that, every dependency not named in UNBUNDLED_PACKAGES
@@ -35,7 +35,7 @@ const RESOLVE_CONCURRENCY = 5;
 const execFileAsync = promisify(execFile);
 const ROOT = process.cwd();
 const STAGING_DIR = path.join(ROOT, '.release-pkg');
-const BUNDLE_FILENAME = 'package.tgz';
+const BUNDLE_FILENAME = process.env.BUNDLE_FILENAME || 'package.tgz';
 
 /**
  * Runs `mapper` over `items` with at most `concurrency` in flight at once.
