@@ -4,7 +4,8 @@
  * working directory into `.release-pkg/<BUNDLE_FILENAME>`, ready for `npm publish` - replacing
  * the pinning guarantee `npm-shrinkwrap.json` used to provide.
  *
- * Usage: UNBUNDLED_PACKAGES="name1 name2" BUNDLE_FILENAME="package.tgz" prepare-npm-bundle.mjs
+ * Usage: UNBUNDLED_PACKAGES="name1 name2" NATIVE_PLATFORMS="linux-x64 darwin-arm64"
+ * BUNDLE_FILENAME="package.tgz" prepare-npm-bundle.mjs
  *
  * Every dependency (dependencies and optionalDependencies alike) gets exact-pinned to the
  * version actually resolved. On top of that, every dependency not named in UNBUNDLED_PACKAGES
@@ -20,13 +21,27 @@
  * a bundled one - npm embeds it there too, from that ancestor's own resolved tree, alongside the
  * separate pinned copy the exclusion still leaves for the consumer's own install to fetch.
  *
+ * If NATIVE_PLATFORMS lists any "os-cpu[-libc]" targets (e.g. "linux-x64 darwin-arm64
+ * win32-x64"), every platform-locked optional dependency found anywhere in the resolved tree
+ * (any package whose own package.json restricts installation via "os"/"cpu", npm's own
+ * convention for per-platform native binary packages - sharp's `@img/sharp-*`, koffi's
+ * `@koromix/koffi-*`, etc) gets its sibling package installed for each listed platform that
+ * isn't already present, before bundling. Without this, a bundled package's native optional
+ * dependency only ever contains the one binary the CI runner itself resolved - most consumers
+ * are fine regardless (npm's own installer re-resolves a correct sibling for its own platform,
+ * and packages built on `node-gyp-build`/`prebuildify` typically already ship every platform's
+ * binary in one package), but bundling every requested platform up front removes the reliance on
+ * that entirely, including for `--ignore-scripts` installs or package managers that don't hoist
+ * the way npm does.
+ *
  * Dependency-free by design: this runs from wherever the action itself is checked out, not
  * from the calling repo's own node_modules, so it can't rely on packages like `asyncbox` or
  * `semver` being resolvable.
  */
 
 import {execFile} from 'node:child_process';
-import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
+import {cp, mkdir, mkdtemp, readFile, rename, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
 
@@ -247,15 +262,15 @@ function collectTransitiveNames(node, reachableNames = new Set(), visitedPaths =
  * subtree, regardless of it being left out of `bundleDependencies`. That's not necessarily wrong
  * for the caller - the excluded name still ends up pinned and installed normally at the top
  * level too - so this only warns rather than blocking the publish.
+ * @param {Record<string, any>} graph
  * @param {string[]} bundledNames
  * @param {Set<string>} unbundledNames
  * @returns {Promise<void>}
  */
-async function warnAboutUnhonorableExclusions(bundledNames, unbundledNames) {
+async function warnAboutUnhonorableExclusions(graph, bundledNames, unbundledNames) {
   if (unbundledNames.size === 0) {
     return;
   }
-  const graph = await getInstalledDependencyGraph();
   for (const bundledName of bundledNames) {
     const node = graph[bundledName];
     if (!node) {
@@ -271,6 +286,162 @@ async function warnAboutUnhonorableExclusions(bundledNames, unbundledNames) {
         );
       }
     }
+  }
+}
+
+/**
+ * Ensures every platform-locked optional dependency found anywhere in the resolved tree (any
+ * package whose own package.json restricts installation via "os"/"cpu" - npm's own convention
+ * for per-platform native binary packages, e.g. sharp's `@img/sharp-*` or koffi's
+ * `@koromix/koffi-*`) has its sibling package installed for each requested target platform,
+ * before bundling.
+ */
+class NativePlatformInflator {
+  // "<prefix>-<os>-<cpu>[-<libc>]" is the convention nearly every per-platform native npm
+  // package follows (sharp's `@img/sharp-linux-x64`, koffi's `@koromix/koffi-win32-arm64`, etc)
+  // - matched against a package's basename (after any "@scope/") to tell which platform it
+  // targets.
+  static #SUFFIX_RE =
+    /-(darwin|linux|win32|freebsd|openbsd|android)-(x64|arm64|ia32|arm|loong64|riscv64)(?:-(musl|glibc))?$/;
+
+  /** @type {{os: string, cpu: string, libc: string|undefined}[]} */
+  #targetPlatforms;
+
+  /**
+   * @param {string} rawTargetPlatforms - NATIVE_PLATFORMS env value: space-separated
+   * "os-cpu[-libc]" entries, e.g. "linux-x64 linux-arm64-musl darwin-arm64"
+   */
+  constructor(rawTargetPlatforms) {
+    this.#targetPlatforms = (rawTargetPlatforms ?? '')
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((entry) => {
+        const [os, cpu, libc] = entry.split('-');
+        return {os, cpu, libc};
+      });
+  }
+
+  /**
+   * @returns {boolean} whether any target platforms were configured
+   */
+  get isEnabled() {
+    return this.#targetPlatforms.length > 0;
+  }
+
+  /**
+   * The "<os>-<cpu>[-<libc>]" platform `name` targets, per the near-universal
+   * "<prefix>-<os>-<cpu>[-<libc>]" naming convention for per-platform native binary packages -
+   * or `null` if `name`'s basename doesn't match it.
+   * @param {string} name
+   * @returns {string|null}
+   */
+  static #platformSuffixOf(name) {
+    const match = NativePlatformInflator.#SUFFIX_RE.exec(name.split('/').pop());
+    return match ? `${match[1]}-${match[2]}${match[3] ? `-${match[3]}` : ''}` : null;
+  }
+
+  /**
+   * Every `optionalDependencies` entry, anywhere in `graph`, whose name matches one of this
+   * instance's target platforms and isn't already installed at `ROOT/node_modules/<name>` -
+   * these are the sharp/koffi-style per-platform sibling packages this driver's own CI runner
+   * never had a reason to install. Returns a `name -> declared range` map, read from whichever
+   * parent package (however deep in the tree) actually declares that optional dependency, so the
+   * range is correct even for a platform variant nobody in this tree currently has installed.
+   * @param {Record<string, any>} graph - an `npm ls --long --json` dependency graph
+   * @returns {Promise<Map<string, string>>}
+   */
+  async #findMissing(graph) {
+    const wantedSuffixes = new Set(
+      this.#targetPlatforms.map(({os, cpu, libc}) => `${os}-${cpu}${libc ? `-${libc}` : ''}`),
+    );
+    const missing = new Map();
+    const visitedPaths = new Set();
+
+    const visit = async (node) => {
+      if (visitedPaths.has(node.path)) {
+        return;
+      }
+      visitedPaths.add(node.path);
+
+      let ownPkg;
+      try {
+        ownPkg = JSON.parse(await readFile(path.join(node.path, 'package.json'), 'utf8'));
+      } catch {
+        ownPkg = {};
+      }
+      for (const [name, range] of Object.entries(ownPkg.optionalDependencies ?? {})) {
+        const suffix = NativePlatformInflator.#platformSuffixOf(name);
+        if (!suffix || !wantedSuffixes.has(suffix) || missing.has(name)) {
+          continue;
+        }
+        const isInstalled = await readFile(path.join(ROOT, 'node_modules', ...name.split('/'), 'package.json'))
+          .then(() => true)
+          .catch(() => false);
+        if (!isInstalled) {
+          missing.set(name, range);
+        }
+      }
+      await Promise.all(Object.values(node.dependencies ?? {}).map(visit));
+    };
+
+    await Promise.all(Object.values(graph).map(visit));
+    return missing;
+  }
+
+  /**
+   * Installs `name@range` into an isolated scratch directory and copies the result into
+   * `ROOT/node_modules/<name>`. Installing multiple platform-locked packages in the same
+   * directory doesn't work - npm resolves one "ideal tree" per invocation and drops whatever
+   * doesn't match the latest one requested - so each gets its own throwaway install directory.
+   * `--force` is needed since this package's own "os"/"cpu" fields don't match the actual CI
+   * runner; that's the entire point of naming an exact per-platform sibling package rather than
+   * the platform-agnostic parent.
+   * @param {string} name
+   * @param {string} range
+   * @returns {Promise<void>}
+   */
+  async #install(name, range) {
+    const scratchDir = await mkdtemp(path.join(tmpdir(), 'native-platform-'));
+    try {
+      await writeFile(path.join(scratchDir, 'package.json'), JSON.stringify({name: 'scratch', version: '0.0.0'}));
+      await execFileAsync(
+        'npm',
+        ['install', `${name}@${range}`, '--force', '--no-audit', '--no-fund'],
+        {cwd: scratchDir, maxBuffer: EXEC_MAX_BUFFER},
+      );
+      const relativeSegments = name.split('/');
+      const dest = path.join(ROOT, 'node_modules', ...relativeSegments);
+      await rm(dest, {recursive: true, force: true});
+      await mkdir(path.dirname(dest), {recursive: true});
+      await cp(path.join(scratchDir, 'node_modules', ...relativeSegments), dest, {recursive: true});
+    } catch (err) {
+      console.warn(`Could not install native platform package "${name}@${range}", skipping: ${err.message}`);
+    } finally {
+      await rm(scratchDir, {recursive: true, force: true});
+    }
+  }
+
+  /**
+   * Installs every missing per-platform sibling package found in `graph` for this instance's
+   * target platforms, so the bundle embeds every requested platform's native binary rather than
+   * only the one the CI runner itself resolved. No-op if no target platforms were configured.
+   * @param {Record<string, any>} graph
+   * @returns {Promise<void>}
+   */
+  async inflate(graph) {
+    if (!this.isEnabled) {
+      return;
+    }
+    const missing = await this.#findMissing(graph);
+    if (missing.size === 0) {
+      return;
+    }
+    console.log(`Installing ${missing.size} missing native platform package(s): ${[...missing.keys()].join(', ')}`);
+    await mapWithConcurrency(
+      [...missing.entries()],
+      ([name, range]) => this.#install(name, range),
+      RESOLVE_CONCURRENCY,
+    );
   }
 }
 
@@ -295,6 +466,7 @@ async function packBundle() {
 
 async function main() {
   const unbundledNames = new Set((process.env.UNBUNDLED_PACKAGES ?? '').split(/\s+/).filter(Boolean));
+  const nativePlatforms = new NativePlatformInflator(process.env.NATIVE_PLATFORMS);
   const originalPkgRaw = await readFile(path.join(ROOT, 'package.json'), 'utf8');
   const pkg = JSON.parse(originalPkgRaw);
 
@@ -310,7 +482,11 @@ async function main() {
     ...Object.keys(pkg.optionalDependencies ?? {}),
   ].filter((name) => !unbundledNames.has(name));
 
-  await warnAboutUnhonorableExclusions(bundledNames, unbundledNames);
+  if (unbundledNames.size > 0 || nativePlatforms.isEnabled) {
+    const graph = await getInstalledDependencyGraph();
+    await warnAboutUnhonorableExclusions(graph, bundledNames, unbundledNames);
+    await nativePlatforms.inflate(graph);
+  }
 
   // strip devDependencies/scripts - the published bundle only ever ships the production tree
   const {devDependencies: _devDependencies, scripts: _scripts, ...stagedPkg} = pkg;
