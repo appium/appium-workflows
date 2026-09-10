@@ -1,0 +1,34 @@
+name: 'Publish bundled npm package'
+description: >
+  Stages a production-only, bundleDependencies-enabled copy of the current npm package and
+  publishes it to the npm registry - replacing the pinning guarantee npm-shrinkwrap.json used
+  to provide before npm v12 removed shrinkwrap support entirely. Must run after the package
+  has already been built (its "files" entries need to exist on disk) and after any version
+  bump, from the repo root.
+inputs:
+  unbundled-packages:
+    description: >
+      Space-separated dependency names to exclude from bundling (wherever declared -
+      dependencies or optionalDependencies), left for the consumer's own npm install to fetch
+      normally instead - every dependency is exact-pinned regardless. Use for anything
+      bundling would be wrong for - most commonly native/platform-specific packages, where
+      bundling would ship whatever binary the CI runner resolved for its own OS/arch and break
+      every other platform.
+    required: false
+    default: ''
+runs:
+  using: 'composite'
+  steps:
+    - name: Stage bundled npm package
+      id: stage
+      shell: bash
+      env:
+        UNBUNDLED_PACKAGES: ${{ inputs.unbundled-packages }}
+        BUNDLE_FILENAME: 'package.tgz'
+      run: |
+        node "${{ github.action_path }}/prepare-npm-bundle.mjs"
+        echo "bundle-filename=$BUNDLE_FILENAME" >> "$GITHUB_OUTPUT"
+    - name: Publish bundled package
+      shell: bash
+      working-directory: .release-pkg
+      run: npm publish --ignore-scripts "${{ steps.stage.outputs.bundle-filename }}"
