@@ -16,9 +16,9 @@
  * packages, where bundling would ship whatever binary the CI runner resolved for its own
  * OS/arch and break every other platform.
  *
- * Fails fast if an excluded package is unavoidably reachable as a transitive dependency of a
- * bundled one - npm would embed it anyway from that ancestor's own resolved tree, silently
- * defeating the exclusion.
+ * Warns (without failing) if an excluded package is also reachable as a transitive dependency of
+ * a bundled one - npm embeds it there too, from that ancestor's own resolved tree, alongside the
+ * separate pinned copy the exclusion still leaves for the consumer's own install to fetch.
  *
  * Dependency-free by design: this runs from wherever the action itself is checked out, not
  * from the calling repo's own node_modules, so it can't rely on packages like `asyncbox` or
@@ -242,14 +242,16 @@ function collectTransitiveNames(node, reachableNames = new Set(), visitedPaths =
 }
 
 /**
- * Rejects exclusions npm can't actually honor: if a bundled package transitively depends on an
- * excluded one, npm's packer will still embed it as part of the bundled package's own resolved
- * subtree, regardless of it being left out of `bundleDependencies`.
+ * Warns about exclusions npm can't fully honor: if a bundled package transitively depends on an
+ * excluded one, npm's packer still embeds it as part of the bundled package's own resolved
+ * subtree, regardless of it being left out of `bundleDependencies`. That's not necessarily wrong
+ * for the caller - the excluded name still ends up pinned and installed normally at the top
+ * level too - so this only warns rather than blocking the publish.
  * @param {string[]} bundledNames
  * @param {Set<string>} unbundledNames
  * @returns {Promise<void>}
  */
-async function assertUnbundledDepsAreHonorable(bundledNames, unbundledNames) {
+async function warnAboutUnhonorableExclusions(bundledNames, unbundledNames) {
   if (unbundledNames.size === 0) {
     return;
   }
@@ -262,10 +264,10 @@ async function assertUnbundledDepsAreHonorable(bundledNames, unbundledNames) {
     const transitiveNames = collectTransitiveNames(node);
     for (const unbundledName of unbundledNames) {
       if (transitiveNames.has(unbundledName)) {
-        throw new Error(
+        console.warn(
           `"${unbundledName}" is listed as an unbundled package, but bundled package "${bundledName}" ` +
-            `transitively depends on it - npm would still embed it inside "${bundledName}"'s bundle, ` +
-            `silently defeating the exclusion. Exclude "${bundledName}" too, or restructure the dependency.`,
+            `transitively depends on it - npm will still embed it inside "${bundledName}"'s bundle, ` +
+            `alongside the separate pinned copy installed normally at the top level.`,
         );
       }
     }
@@ -308,7 +310,7 @@ async function main() {
     ...Object.keys(pkg.optionalDependencies ?? {}),
   ].filter((name) => !unbundledNames.has(name));
 
-  await assertUnbundledDepsAreHonorable(bundledNames, unbundledNames);
+  await warnAboutUnhonorableExclusions(bundledNames, unbundledNames);
 
   // strip devDependencies/scripts - the published bundle only ever ships the production tree
   const {devDependencies: _devDependencies, scripts: _scripts, ...stagedPkg} = pkg;
