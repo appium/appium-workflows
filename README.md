@@ -39,6 +39,13 @@ job already has).
 
 **Inputs:**
 - `unbundled-packages` (string, default: `''`) - Space-separated dependency names to exclude from bundling.
+- `native-platforms` (string, default: `''`) - Space-separated `os-cpu[-libc]` targets (e.g.
+  `linux-x64 linux-arm64 darwin-arm64 win32-x64`) to additionally embed a native
+  binary for, on top of whatever the CI runner itself resolved. Applies to every platform-locked
+  optional dependency anywhere in the resolved tree (any package whose own `package.json`
+  restricts installation via `os`/`cpu` - npm's own convention for per-platform native binary
+  packages, e.g. sharp's `@img/sharp-*` or koffi's `@koromix/koffi-*`), not just ones named in
+  `unbundled-packages`.
 
 **Usage:**
 ```yaml
@@ -46,6 +53,7 @@ job already has).
   if: env.PREV_VERSION != env.NEW_VERSION
   with:
     unbundled-packages: koffi
+    native-platforms: linux-x64 linux-arm64 darwin-arm64 win32-x64
 ```
 
 ## Usage

@@ -16,6 +16,20 @@ inputs:
       every other platform.
     required: false
     default: ''
+  native-platforms:
+    description: >
+      Space-separated "os-cpu[-libc]" targets (e.g. "linux-x64 linux-arm64 darwin-arm64
+      win32-x64") to additionally embed a native binary for, on top of whatever the
+      CI runner itself resolved. Applies to every platform-locked optional dependency found
+      anywhere in the resolved tree (any package whose own package.json restricts installation
+      via "os"/"cpu" - npm's own convention for per-platform native binary packages, e.g. sharp's
+      `@img/sharp-*` or koffi's `@koromix/koffi-*`), not just ones named in unbundled-packages.
+      Leave empty (the default) to bundle only the CI runner's own platform, relying on the
+      consumer's own npm install (or the package's own install script, for `node-gyp-build`/
+      `prebuildify`-style packages that ship every platform in one package already) to fill in
+      the rest.
+    required: false
+    default: ''
 runs:
   using: 'composite'
   steps:
@@ -24,6 +38,7 @@ runs:
       shell: bash
       env:
         UNBUNDLED_PACKAGES: ${{ inputs.unbundled-packages }}
+        NATIVE_PLATFORMS: ${{ inputs.native-platforms }}
         BUNDLE_FILENAME: 'package.tgz'
       run: |
         node "${{ github.action_path }}/prepare-npm-bundle.mjs"
