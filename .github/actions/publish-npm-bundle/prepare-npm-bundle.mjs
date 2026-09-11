@@ -481,25 +481,25 @@ class NativePlatformManager {
       } catch {
         return;
       }
-      await Promise.all(
-        entries
-          .filter((entry) => entry.isDirectory())
-          .map(async (entry) => {
-            const entryPath = path.join(dir, entry.name);
-            if (entry.name !== 'prebuilds') {
-              await walk(entryPath);
-              return;
-            }
-            const platformDirs = await readdir(entryPath, {withFileTypes: true}).catch(() => []);
-            await Promise.all(
-              platformDirs
-                .filter((platformDir) => platformDir.isDirectory() && !wantedNames.has(platformDir.name))
-                .map(async (platformDir) => {
-                  await rm(path.join(entryPath, platformDir.name), {recursive: true, force: true});
-                  trimmedCount++;
-                }),
-            );
-          }),
+      await mapWithConcurrency(
+        entries.filter((entry) => entry.isDirectory()),
+        async (entry) => {
+          const entryPath = path.join(dir, entry.name);
+          if (entry.name !== 'prebuilds') {
+            await walk(entryPath);
+            return;
+          }
+          const platformDirs = await readdir(entryPath, {withFileTypes: true}).catch(() => []);
+          await mapWithConcurrency(
+            platformDirs.filter((platformDir) => platformDir.isDirectory() && !wantedNames.has(platformDir.name)),
+            async (platformDir) => {
+              await rm(path.join(entryPath, platformDir.name), {recursive: true, force: true});
+              trimmedCount++;
+            },
+            RESOLVE_CONCURRENCY,
+          );
+        },
+        RESOLVE_CONCURRENCY,
       );
     };
 
