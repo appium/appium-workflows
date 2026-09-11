@@ -270,14 +270,17 @@ async function warnAboutUnhonorableExclusions(graph, bundledNames, unbundledName
 }
 
 /**
- * Manages which platforms' native binaries end up in the bundle, for both ways npm packages ship
- * them: `inflate()` ensures every platform-locked optional dependency found anywhere in the
+ * Manages which platforms' native binaries end up in the bundle, across every way npm packages
+ * ship them: `inflate()` ensures every platform-locked optional dependency found anywhere in the
  * resolved tree (any package whose own package.json restricts installation via "os"/"cpu" - npm's
  * own convention for per-platform native binary packages, e.g. sharp's `@img/sharp-*` or koffi's
  * `@koromix/koffi-*`) has its sibling package installed for each requested target platform.
  * `trim()` handles the opposite pattern - packages like `bare-fs` that ship a `prebuilds/`
  * directory containing every supported platform's binary bundled together in one package - by
- * deleting whichever platform subdirectories aren't wanted.
+ * deleting whichever platform subdirectories aren't wanted. `stripUnbundled()` handles a third
+ * case: an unbundled package (see `warnAboutUnhonorableExclusions`) that still gets pulled into
+ * the bundle as someone else's transitive dependency - `bundleDependencies` filtering can't stop
+ * that, but its own native siblings can still be deleted directly.
  */
 class NativePlatformManager {
   // "<prefix>-<os>-<cpu>[-<libc>]" is the convention nearly every per-platform native npm
@@ -490,6 +493,67 @@ class NativePlatformManager {
       console.log(`Trimmed ${totalTrimmed} unwanted platform prebuild(s):\n${lines.join('\n')}`);
     }
   }
+
+  /**
+   * Deletes every native, platform-locked sibling package (e.g. sharp's `@img/sharp-linux-x64`)
+   * belonging to any installed instance of an unbundled package, wherever that instance sits in
+   * the resolved tree - including nested inside another bundled package's own subtree, which
+   * `bundleDependencies` filtering by name alone can't reach. Only those native siblings are
+   * removed; the excluded package's own JavaScript and its `optionalDependencies` declarations
+   * are left untouched, so a normal `npm install` still fetches the right native package for
+   * whatever platform the consumer is actually on. This is what makes excluding something like
+   * `sharp` actually shrink the bundle, rather than just avoiding a redundant top-level copy.
+   * Independent of NATIVE_PLATFORMS/`isEnabled` - runs whenever there are unbundled names at all.
+   * @param {Record<string, any>} graph
+   * @param {Set<string>} unbundledNames
+   * @returns {Promise<void>}
+   */
+  async stripUnbundled(graph, unbundledNames) {
+    if (unbundledNames.size === 0) {
+      return;
+    }
+    const visitedPaths = new Set();
+    /** @type {Map<string, string[]>} */
+    const strippedByPackage = new Map();
+
+    const visit = async (name, node) => {
+      if (visitedPaths.has(node.path)) {
+        return;
+      }
+      visitedPaths.add(node.path);
+
+      const children = Object.entries(node.dependencies ?? {});
+      const isUnbundled = unbundledNames.has(name);
+      if (isUnbundled) {
+        await mapWithConcurrency(
+          children.filter(([childName]) => NativePlatformManager.#platformSuffixOf(childName)),
+          async ([childName, childNode]) => {
+            await rm(childNode.path, {recursive: true, force: true});
+            if (!strippedByPackage.has(name)) {
+              strippedByPackage.set(name, []);
+            }
+            strippedByPackage.get(name).push(childName);
+          },
+          RESOLVE_CONCURRENCY,
+        );
+      }
+
+      // native siblings just got deleted above - don't try to descend into them too
+      await mapWithConcurrency(
+        children.filter(([childName]) => !(isUnbundled && NativePlatformManager.#platformSuffixOf(childName))),
+        ([childName, childNode]) => visit(childName, childNode),
+        RESOLVE_CONCURRENCY,
+      );
+    };
+
+    await mapWithConcurrency(Object.entries(graph), ([name, node]) => visit(name, node), RESOLVE_CONCURRENCY);
+
+    const total = [...strippedByPackage.values()].reduce((sum, natives) => sum + natives.length, 0);
+    if (total > 0) {
+      const lines = [...strippedByPackage.entries()].map(([name, natives]) => ` - ${name} (${natives.join(', ')})`);
+      console.log(`Stripped ${total} native platform package(s) bundled via unbundled dependencies:\n${lines.join('\n')}`);
+    }
+  }
 }
 
 /**
@@ -525,6 +589,7 @@ async function main() {
   if (unbundledNames.size > 0 || nativePlatforms.isEnabled) {
     const graph = await getInstalledDependencyGraph();
     await warnAboutUnhonorableExclusions(graph, bundledNames, unbundledNames);
+    await nativePlatforms.stripUnbundled(graph, unbundledNames);
     await nativePlatforms.inflate(graph);
     await nativePlatforms.trim();
   }
