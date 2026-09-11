@@ -25,9 +25,14 @@ inputs:
       via "os"/"cpu" - npm's own convention for per-platform native binary packages, e.g. sharp's
       `@img/sharp-*` or koffi's `@koromix/koffi-*`), not just ones named in unbundled-packages.
       Leave empty (the default) to bundle only the CI runner's own platform, relying on the
-      consumer's own npm install (or the package's own install script, for `node-gyp-build`/
-      `prebuildify`-style packages that ship every platform in one package already) to fill in
-      the rest.
+      consumer's own npm install to fill in the rest.
+
+      The opposite pattern - a package that ships every platform's binary bundled together in one
+      `prebuilds/` directory (`node-gyp-build`/`prebuildify`'s own convention, e.g. `bare-fs`) -
+      ships every platform unconditionally, so whenever this input is non-empty, any
+      `prebuilds/<platform>` subdirectory not matching the CI runner's own platform or a
+      configured target here also gets deleted before bundling, trimming otherwise-unavoidable
+      dead weight (e.g. iOS/Android prebuilds pulled in by an unrelated dependency).
     required: false
     default: ''
 runs:

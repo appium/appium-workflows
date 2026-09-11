@@ -45,7 +45,12 @@ job already has).
   optional dependency anywhere in the resolved tree (any package whose own `package.json`
   restricts installation via `os`/`cpu` - npm's own convention for per-platform native binary
   packages, e.g. sharp's `@img/sharp-*` or koffi's `@koromix/koffi-*`), not just ones named in
-  `unbundled-packages`.
+  `unbundled-packages`. The opposite pattern - a package that ships every platform's binary
+  bundled together in one `prebuilds/` directory (`node-gyp-build`/`prebuildify`'s own
+  convention, e.g. `bare-fs`) - ships every platform unconditionally, so whenever this input is
+  non-empty, any `prebuilds/<platform>` subdirectory not matching the CI runner's own platform or
+  a configured target here also gets deleted before bundling, trimming otherwise-unavoidable dead
+  weight (e.g. iOS/Android prebuilds pulled in by an unrelated dependency).
 
 **Usage:**
 ```yaml

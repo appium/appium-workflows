@@ -34,13 +34,20 @@
  * that entirely, including for `--ignore-scripts` installs or package managers that don't hoist
  * the way npm does.
  *
+ * The opposite pattern - a package that ships every platform's binary bundled together in one
+ * `prebuilds/` directory (`node-gyp-build`/`prebuildify`'s own convention) - ships every platform
+ * unconditionally, so whenever NATIVE_PLATFORMS is non-empty, every `prebuilds/<platform>`
+ * subdirectory not matching the CI runner's own platform or a configured target also gets
+ * deleted before bundling, trimming dead weight (e.g. iOS/Android prebuilds pulled in by an
+ * unrelated dependency).
+ *
  * Dependency-free by design: this runs from wherever the action itself is checked out, not
  * from the calling repo's own node_modules, so it can't rely on packages like `asyncbox` or
  * `semver` being resolvable.
  */
 
 import {execFile} from 'node:child_process';
-import {cp, mkdir, mkdtemp, readFile, rename, rm, writeFile} from 'node:fs/promises';
+import {cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
@@ -290,13 +297,16 @@ async function warnAboutUnhonorableExclusions(graph, bundledNames, unbundledName
 }
 
 /**
- * Ensures every platform-locked optional dependency found anywhere in the resolved tree (any
- * package whose own package.json restricts installation via "os"/"cpu" - npm's own convention
- * for per-platform native binary packages, e.g. sharp's `@img/sharp-*` or koffi's
- * `@koromix/koffi-*`) has its sibling package installed for each requested target platform,
- * before bundling.
+ * Manages which platforms' native binaries end up in the bundle, for both ways npm packages ship
+ * them: `inflate()` ensures every platform-locked optional dependency found anywhere in the
+ * resolved tree (any package whose own package.json restricts installation via "os"/"cpu" - npm's
+ * own convention for per-platform native binary packages, e.g. sharp's `@img/sharp-*` or koffi's
+ * `@koromix/koffi-*`) has its sibling package installed for each requested target platform.
+ * `trim()` handles the opposite pattern - packages like `bare-fs` that ship a `prebuilds/`
+ * directory containing every supported platform's binary bundled together in one package - by
+ * deleting whichever platform subdirectories aren't wanted.
  */
-class NativePlatformInflator {
+class NativePlatformManager {
   // "<prefix>-<os>-<cpu>[-<libc>]" is the convention nearly every per-platform native npm
   // package follows (sharp's `@img/sharp-linux-x64`, koffi's `@koromix/koffi-win32-arm64`, etc)
   // - matched against a package's basename (after any "@scope/") to tell which platform it
@@ -336,7 +346,7 @@ class NativePlatformInflator {
    * @returns {string|null}
    */
   static #platformSuffixOf(name) {
-    const match = NativePlatformInflator.#SUFFIX_RE.exec(name.split('/').pop());
+    const match = NativePlatformManager.#SUFFIX_RE.exec(name.split('/').pop());
     return match ? `${match[1]}-${match[2]}${match[3] ? `-${match[3]}` : ''}` : null;
   }
 
@@ -370,7 +380,7 @@ class NativePlatformInflator {
         ownPkg = {};
       }
       for (const [name, range] of Object.entries(ownPkg.optionalDependencies ?? {})) {
-        const suffix = NativePlatformInflator.#platformSuffixOf(name);
+        const suffix = NativePlatformManager.#platformSuffixOf(name);
         if (!suffix || !wantedSuffixes.has(suffix) || missing.has(name)) {
           continue;
         }
@@ -443,6 +453,61 @@ class NativePlatformInflator {
       RESOLVE_CONCURRENCY,
     );
   }
+
+  /**
+   * Deletes every `prebuilds/<platform>` subdirectory, anywhere under `ROOT/node_modules`, that
+   * isn't wanted - `node-gyp-build`/`prebuildify`'s own convention for bundling every supported
+   * platform's binary together in one package (unlike sharp/koffi's one-package-per-platform
+   * approach), meaning every install otherwise ships every platform's binary regardless of what's
+   * actually wanted. The CI runner's own platform is always wanted, on top of whatever target
+   * platforms were configured. No-op if no target platforms were configured at all - trimming
+   * down to just the CI runner's own platform isn't something every caller wants by default.
+   * @returns {Promise<void>}
+   */
+  async trim() {
+    if (!this.isEnabled) {
+      return;
+    }
+    const wantedNames = new Set([
+      `${process.platform}-${process.arch}`,
+      ...this.#targetPlatforms.map(({os, cpu}) => `${os}-${cpu}`),
+    ]);
+    let trimmedCount = 0;
+
+    const walk = async (dir) => {
+      let entries;
+      try {
+        entries = await readdir(dir, {withFileTypes: true});
+      } catch {
+        return;
+      }
+      await Promise.all(
+        entries
+          .filter((entry) => entry.isDirectory())
+          .map(async (entry) => {
+            const entryPath = path.join(dir, entry.name);
+            if (entry.name !== 'prebuilds') {
+              await walk(entryPath);
+              return;
+            }
+            const platformDirs = await readdir(entryPath, {withFileTypes: true}).catch(() => []);
+            await Promise.all(
+              platformDirs
+                .filter((platformDir) => platformDir.isDirectory() && !wantedNames.has(platformDir.name))
+                .map(async (platformDir) => {
+                  await rm(path.join(entryPath, platformDir.name), {recursive: true, force: true});
+                  trimmedCount++;
+                }),
+            );
+          }),
+      );
+    };
+
+    await walk(path.join(ROOT, 'node_modules'));
+    if (trimmedCount > 0) {
+      console.log(`Trimmed ${trimmedCount} unwanted platform prebuild(s)`);
+    }
+  }
 }
 
 /**
@@ -466,7 +531,7 @@ async function packBundle() {
 
 async function main() {
   const unbundledNames = new Set((process.env.UNBUNDLED_PACKAGES ?? '').split(/\s+/).filter(Boolean));
-  const nativePlatforms = new NativePlatformInflator(process.env.NATIVE_PLATFORMS);
+  const nativePlatforms = new NativePlatformManager(process.env.NATIVE_PLATFORMS);
   const originalPkgRaw = await readFile(path.join(ROOT, 'package.json'), 'utf8');
   const pkg = JSON.parse(originalPkgRaw);
 
@@ -487,6 +552,7 @@ async function main() {
     await warnAboutUnhonorableExclusions(graph, bundledNames, unbundledNames);
     await nativePlatforms.inflate(graph);
   }
+  await nativePlatforms.trim();
 
   // strip devDependencies/scripts - the published bundle only ever ships the production tree
   const {devDependencies: _devDependencies, scripts: _scripts, ...stagedPkg} = pkg;
