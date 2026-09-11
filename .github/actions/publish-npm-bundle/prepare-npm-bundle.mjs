@@ -327,50 +327,75 @@ class NativePlatformManager {
   }
 
   /**
+   * Whether `dirName`, a `prebuilds/<dirName>` entry, covers any of `wantedPlatforms`.
+   * node-gyp-build parses it strictly as "<os>-<cpu1>[+<cpu2>...]" (see `parseTuple` at
+   * https://github.com/prebuild/node-gyp-build/blob/master/node-gyp-build.js) - one directory can
+   * be a universal build covering several architectures for the same os (e.g. "darwin-x64+arm64"),
+   * so comparing `dirName` itself against a plain "<os>-<cpu>" string would wrongly discard a
+   * build that still covers a wanted target.
+   * @param {string} dirName
+   * @param {{os: string, cpu: string}[]} wantedPlatforms
+   * @returns {boolean}
+   */
+  static #coversWantedPlatform(dirName, wantedPlatforms) {
+    const [os, cpuList] = dirName.split('-');
+    if (!os || !cpuList) {
+      return false;
+    }
+    const cpus = new Set(cpuList.split('+'));
+    return wantedPlatforms.some((wanted) => wanted.os === os && cpus.has(wanted.cpu));
+  }
+
+  /**
    * Every `optionalDependencies` entry, anywhere in `graph`, whose name matches one of this
    * instance's target platforms and isn't already installed at `ROOT/node_modules/<name>` -
    * these are the sharp/koffi-style per-platform sibling packages this driver's own CI runner
    * never had a reason to install. Returns a `name -> declared range` map, read from whichever
    * parent package (however deep in the tree) actually declares that optional dependency, so the
    * range is correct even for a platform variant nobody in this tree currently has installed.
+   * Skips any package named in `unbundledNames` - `stripUnbundled()` deliberately removed its
+   * native siblings, and re-adding them here would silently undo that.
    * @param {Record<string, any>} graph - an `npm ls --long --json` dependency graph
+   * @param {Set<string>} unbundledNames
    * @returns {Promise<Map<string, string>>}
    */
-  async #findMissing(graph) {
+  async #findMissing(graph, unbundledNames) {
     const wantedSuffixes = new Set(
       this.#targetPlatforms.map(({os, cpu, libc}) => `${os}-${cpu}${libc ? `-${libc}` : ''}`),
     );
     const missing = new Map();
     const visitedPaths = new Set();
 
-    const visit = async (node) => {
+    const visit = async (name, node) => {
       if (visitedPaths.has(node.path)) {
         return;
       }
       visitedPaths.add(node.path);
 
-      let ownPkg;
-      try {
-        ownPkg = JSON.parse(await readFile(path.join(node.path, 'package.json'), 'utf8'));
-      } catch {
-        ownPkg = {};
-      }
-      for (const [name, range] of Object.entries(ownPkg.optionalDependencies ?? {})) {
-        const suffix = NativePlatformManager.#platformSuffixOf(name);
-        if (!suffix || !wantedSuffixes.has(suffix) || missing.has(name)) {
-          continue;
+      if (!unbundledNames.has(name)) {
+        let ownPkg;
+        try {
+          ownPkg = JSON.parse(await readFile(path.join(node.path, 'package.json'), 'utf8'));
+        } catch {
+          ownPkg = {};
         }
-        const isInstalled = await readFile(path.join(ROOT, 'node_modules', ...name.split('/'), 'package.json'))
-          .then(() => true)
-          .catch(() => false);
-        if (!isInstalled) {
-          missing.set(name, range);
+        for (const [depName, range] of Object.entries(ownPkg.optionalDependencies ?? {})) {
+          const suffix = NativePlatformManager.#platformSuffixOf(depName);
+          if (!suffix || !wantedSuffixes.has(suffix) || missing.has(depName)) {
+            continue;
+          }
+          const isInstalled = await readFile(path.join(ROOT, 'node_modules', ...depName.split('/'), 'package.json'))
+            .then(() => true)
+            .catch(() => false);
+          if (!isInstalled) {
+            missing.set(depName, range);
+          }
         }
       }
-      await Promise.all(Object.values(node.dependencies ?? {}).map(visit));
+      await Promise.all(Object.entries(node.dependencies ?? {}).map(([childName, childNode]) => visit(childName, childNode)));
     };
 
-    await Promise.all(Object.values(graph).map(visit));
+    await Promise.all(Object.entries(graph).map(([name, node]) => visit(name, node)));
     return missing;
   }
 
@@ -411,14 +436,17 @@ class NativePlatformManager {
    * Installs every missing per-platform sibling package found in `graph` for this instance's
    * target platforms, so the bundle embeds every requested platform's native binary rather than
    * only the one the CI runner itself resolved. No-op if no target platforms were configured.
+   * `unbundledNames` is forwarded to `#findMissing()` so a package `stripUnbundled()` already
+   * cleared of its native siblings doesn't just get them reinstalled here.
    * @param {Record<string, any>} graph
+   * @param {Set<string>} unbundledNames
    * @returns {Promise<void>}
    */
-  async inflate(graph) {
+  async inflate(graph, unbundledNames) {
     if (!this.isEnabled) {
       return;
     }
-    const missing = await this.#findMissing(graph);
+    const missing = await this.#findMissing(graph, unbundledNames);
     if (missing.size === 0) {
       return;
     }
@@ -444,10 +472,7 @@ class NativePlatformManager {
     if (!this.isEnabled) {
       return;
     }
-    const wantedNames = new Set([
-      `${process.platform}-${process.arch}`,
-      ...this.#targetPlatforms.map(({os, cpu}) => `${os}-${cpu}`),
-    ]);
+    const wantedPlatforms = [{os: process.platform, cpu: process.arch}, ...this.#targetPlatforms];
     /** @type {Map<string, string[]>} */
     const trimmedByPackage = new Map();
 
@@ -471,7 +496,11 @@ class NativePlatformManager {
           const packageName = dir.split(`${path.sep}node_modules${path.sep}`).pop();
           const platformDirs = await readdir(entryPath, {withFileTypes: true}).catch(() => []);
           await mapWithConcurrency(
-            platformDirs.filter((platformDir) => platformDir.isDirectory() && !wantedNames.has(platformDir.name)),
+            platformDirs.filter(
+              (platformDir) =>
+                platformDir.isDirectory() &&
+                !NativePlatformManager.#coversWantedPlatform(platformDir.name, wantedPlatforms),
+            ),
             async (platformDir) => {
               await rm(path.join(entryPath, platformDir.name), {recursive: true, force: true});
               if (!trimmedByPackage.has(packageName)) {
@@ -517,12 +546,14 @@ class NativePlatformManager {
     const strippedByPackage = new Map();
 
     const visit = async (name, node) => {
-      if (visitedPaths.has(node.path)) {
+      // an uninstalled optional dependency (e.g. sharp's native package for some other platform)
+      // appears here too, just without a `path` - nothing on disk to strip or descend into
+      if (!node.path || visitedPaths.has(node.path)) {
         return;
       }
       visitedPaths.add(node.path);
 
-      const children = Object.entries(node.dependencies ?? {});
+      const children = Object.entries(node.dependencies ?? {}).filter(([, childNode]) => childNode.path);
       const isUnbundled = unbundledNames.has(name);
       if (isUnbundled) {
         await mapWithConcurrency(
@@ -590,7 +621,7 @@ async function main() {
     const graph = await getInstalledDependencyGraph();
     await warnAboutUnhonorableExclusions(graph, bundledNames, unbundledNames);
     await nativePlatforms.stripUnbundled(graph, unbundledNames);
-    await nativePlatforms.inflate(graph);
+    await nativePlatforms.inflate(graph, unbundledNames);
     await nativePlatforms.trim();
   }
 
