@@ -472,7 +472,8 @@ class NativePlatformManager {
       `${process.platform}-${process.arch}`,
       ...this.#targetPlatforms.map(({os, cpu}) => `${os}-${cpu}`),
     ]);
-    let trimmedCount = 0;
+    /** @type {string[]} */
+    const trimmed = [];
 
     const walk = async (dir) => {
       let entries;
@@ -489,12 +490,15 @@ class NativePlatformManager {
             await walk(entryPath);
             return;
           }
+          // `dir` is the package's own directory (prebuilds's parent) - everything after the
+          // innermost "node_modules/" segment is its name, scope included
+          const packageName = dir.split(`${path.sep}node_modules${path.sep}`).pop();
           const platformDirs = await readdir(entryPath, {withFileTypes: true}).catch(() => []);
           await mapWithConcurrency(
             platformDirs.filter((platformDir) => platformDir.isDirectory() && !wantedNames.has(platformDir.name)),
             async (platformDir) => {
               await rm(path.join(entryPath, platformDir.name), {recursive: true, force: true});
-              trimmedCount++;
+              trimmed.push(`${packageName} (${platformDir.name})`);
             },
             RESOLVE_CONCURRENCY,
           );
@@ -504,8 +508,8 @@ class NativePlatformManager {
     };
 
     await walk(path.join(ROOT, 'node_modules'));
-    if (trimmedCount > 0) {
-      console.log(`Trimmed ${trimmedCount} unwanted platform prebuild(s)`);
+    if (trimmed.length > 0) {
+      console.log(`Trimmed ${trimmed.length} unwanted platform prebuild(s): ${trimmed.join(', ')}`);
     }
   }
 }
