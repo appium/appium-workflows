@@ -548,8 +548,8 @@ async function main() {
     const graph = await getInstalledDependencyGraph();
     await warnAboutUnhonorableExclusions(graph, bundledNames, unbundledNames);
     await nativePlatforms.inflate(graph);
+    await nativePlatforms.trim();
   }
-  await nativePlatforms.trim();
 
   // strip devDependencies/scripts - the published bundle only ever ships the production tree
   const {devDependencies: _devDependencies, scripts: _scripts, ...stagedPkg} = pkg;
