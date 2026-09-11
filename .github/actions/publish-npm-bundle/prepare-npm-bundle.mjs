@@ -539,13 +539,6 @@ async function main() {
   const originalPkgRaw = await readFile(path.join(ROOT, 'package.json'), 'utf8');
   const pkg = JSON.parse(originalPkgRaw);
 
-  if (!Array.isArray(pkg.files) || pkg.files.length === 0) {
-    throw new Error(
-      'package.json must declare a non-empty "files" field - without it there is no reliable way to know ' +
-        'what belongs in the published bundle',
-    );
-  }
-
   const bundledNames = [
     ...Object.keys(pkg.dependencies ?? {}),
     ...Object.keys(pkg.optionalDependencies ?? {}),
