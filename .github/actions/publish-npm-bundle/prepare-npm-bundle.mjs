@@ -472,8 +472,8 @@ class NativePlatformManager {
       `${process.platform}-${process.arch}`,
       ...this.#targetPlatforms.map(({os, cpu}) => `${os}-${cpu}`),
     ]);
-    /** @type {string[]} */
-    const trimmed = [];
+    /** @type {Map<string, string[]>} */
+    const trimmedByPackage = new Map();
 
     const walk = async (dir) => {
       let entries;
@@ -498,7 +498,10 @@ class NativePlatformManager {
             platformDirs.filter((platformDir) => platformDir.isDirectory() && !wantedNames.has(platformDir.name)),
             async (platformDir) => {
               await rm(path.join(entryPath, platformDir.name), {recursive: true, force: true});
-              trimmed.push(`${packageName} (${platformDir.name})`);
+              if (!trimmedByPackage.has(packageName)) {
+                trimmedByPackage.set(packageName, []);
+              }
+              trimmedByPackage.get(packageName).push(platformDir.name);
             },
             RESOLVE_CONCURRENCY,
           );
@@ -508,8 +511,10 @@ class NativePlatformManager {
     };
 
     await walk(path.join(ROOT, 'node_modules'));
-    if (trimmed.length > 0) {
-      console.log(`Trimmed ${trimmed.length} unwanted platform prebuild(s): ${trimmed.join(', ')}`);
+    const totalTrimmed = [...trimmedByPackage.values()].reduce((sum, platforms) => sum + platforms.length, 0);
+    if (totalTrimmed > 0) {
+      const lines = [...trimmedByPackage.entries()].map(([name, platforms]) => ` - ${name} (${platforms.join(', ')})`);
+      console.log(`Trimmed ${totalTrimmed} unwanted platform prebuild(s):\n${lines.join('\n')}`);
     }
   }
 }
