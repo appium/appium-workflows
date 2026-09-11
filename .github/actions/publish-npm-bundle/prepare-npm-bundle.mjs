@@ -7,39 +7,12 @@
  * Usage: UNBUNDLED_PACKAGES="name1 name2" NATIVE_PLATFORMS="linux-x64 darwin-arm64"
  * BUNDLE_FILENAME="package.tgz" prepare-npm-bundle.mjs
  *
- * Every dependency (dependencies and optionalDependencies alike) gets exact-pinned to the
- * version actually resolved. On top of that, every dependency not named in UNBUNDLED_PACKAGES
- * also gets bundled (its resolved tree embedded verbatim in the tarball, taken from this
- * package's own already-installed node_modules - the same tree CI tested against, via
- * `npm pack` itself rather than a fresh re-resolving install). Named packages are excluded from
- * bundling, left for the consumer's own npm install to fetch that exact pinned version normally.
- * Use this for anything bundling would be wrong for - most commonly native/platform-specific
- * packages, where bundling would ship whatever binary the CI runner resolved for its own
- * OS/arch and break every other platform.
- *
- * Warns (without failing) if an excluded package is also reachable as a transitive dependency of
- * a bundled one - npm embeds it there too, from that ancestor's own resolved tree, alongside the
- * separate pinned copy the exclusion still leaves for the consumer's own install to fetch.
- *
- * If NATIVE_PLATFORMS lists any "os-cpu[-libc]" targets (e.g. "linux-x64 darwin-arm64
- * win32-x64"), every platform-locked optional dependency found anywhere in the resolved tree
- * (any package whose own package.json restricts installation via "os"/"cpu", npm's own
- * convention for per-platform native binary packages - sharp's `@img/sharp-*`, koffi's
- * `@koromix/koffi-*`, etc) gets its sibling package installed for each listed platform that
- * isn't already present, before bundling. Without this, a bundled package's native optional
- * dependency only ever contains the one binary the CI runner itself resolved - most consumers
- * are fine regardless (npm's own installer re-resolves a correct sibling for its own platform,
- * and packages built on `node-gyp-build`/`prebuildify` typically already ship every platform's
- * binary in one package), but bundling every requested platform up front removes the reliance on
- * that entirely, including for `--ignore-scripts` installs or package managers that don't hoist
- * the way npm does.
- *
- * The opposite pattern - a package that ships every platform's binary bundled together in one
- * `prebuilds/` directory (`node-gyp-build`/`prebuildify`'s own convention) - ships every platform
- * unconditionally, so whenever NATIVE_PLATFORMS is non-empty, every `prebuilds/<platform>`
- * subdirectory not matching the CI runner's own platform or a configured target also gets
- * deleted before bundling, trimming dead weight (e.g. iOS/Android prebuilds pulled in by an
- * unrelated dependency).
+ * Every dependency gets exact-pinned to the version actually resolved, taken from this package's
+ * own already-installed node_modules via `npm pack` (not a fresh re-resolving install). Every
+ * dependency not named in UNBUNDLED_PACKAGES also gets bundled; named ones are left for the
+ * consumer's own install to fetch normally instead - use this for anything bundling would be
+ * wrong for, most commonly native/platform-specific packages. See `warnAboutUnhonorableExclusions`
+ * and `NativePlatformManager` below for how exclusions and cross-platform native bundling work.
  *
  * Dependency-free by design: this runs from wherever the action itself is checked out, not
  * from the calling repo's own node_modules, so it can't rely on packages like `asyncbox` or
