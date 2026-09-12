@@ -184,27 +184,81 @@ async function resolveDependencyVersion(name, range) {
 }
 
 /**
+ * `npm ls --long` fully expands a package's `dependencies` only the first time it encounters that
+ * installed path; every other position where the very same instance appears - say, both a direct
+ * and a transitive dependency - comes back as a bare reference sharing the same `path` (and its
+ * own accurate `_dependencies`) but without its own `dependencies`. Left alone, a traversal that
+ * happens to reach the bare reference first would dedupe further visits to that path by path and
+ * permanently miss the one occurrence that actually carries the recursive data. This splices every
+ * bare reference's `dependencies` in from whichever occurrence of the same path is actually
+ * expanded, so every downstream traversal sees the same, complete node no matter which occurrence
+ * it reaches first.
+ * @param {Record<string, any>} graph
+ * @returns {void}
+ */
+function normalizeDedupedNodes(graph) {
+  /** @type {Map<string, Record<string, any>>} */
+  const expandedByPath = new Map();
+  const collectExpanded = (node) => {
+    if (node.path && Object.keys(node.dependencies ?? {}).length > 0 && !expandedByPath.has(node.path)) {
+      expandedByPath.set(node.path, node);
+    }
+    for (const child of Object.values(node.dependencies ?? {})) {
+      collectExpanded(child);
+    }
+  };
+  for (const node of Object.values(graph)) {
+    collectExpanded(node);
+  }
+
+  const visitedNodes = new WeakSet();
+  const fillIn = (node) => {
+    if (visitedNodes.has(node)) {
+      return;
+    }
+    visitedNodes.add(node);
+    if (node.path && Object.keys(node.dependencies ?? {}).length === 0) {
+      const expanded = expandedByPath.get(node.path);
+      if (expanded) {
+        node.dependencies = expanded.dependencies;
+      }
+    }
+    for (const child of Object.values(node.dependencies ?? {})) {
+      fillIn(child);
+    }
+  };
+  for (const node of Object.values(graph)) {
+    fillIn(node);
+  }
+}
+
+/**
  * The production dependency tree npm actually resolved into `ROOT/node_modules` (the same tree
- * CI tested against), as `npm ls --long --json` reports it. `--long` adds each node's own
- * install `path` and its raw `_dependencies` map (its own declared `dependencies` and
- * `optionalDependencies`, merged - never `peerDependencies`), which is what npm's bundler
- * actually follows and what distinguishes same-named packages resolved to different versions at
- * different points in the tree. npm exits non-zero whenever anything in the tree is missing or
- * extraneous (e.g. an optional dependency unsupported on this platform), but still emits a usable
- * tree on stdout, so a failed exit is only fatal if stdout is empty.
+ * CI tested against), as `npm ls --long --json` reports it, normalized so every occurrence of the
+ * same installed package sees the same, fully-expanded `dependencies` (see
+ * `normalizeDedupedNodes`). `--long` adds each node's own install `path` and its raw
+ * `_dependencies` map (its own declared `dependencies` and `optionalDependencies`, merged - never
+ * `peerDependencies`), which is what npm's bundler actually follows and what distinguishes
+ * same-named packages resolved to different versions at different points in the tree. npm exits
+ * non-zero whenever anything in the tree is missing or extraneous (e.g. an optional dependency
+ * unsupported on this platform), but still emits a usable tree on stdout, so a failed exit is only
+ * fatal if stdout is empty.
  * @returns {Promise<Record<string, any>>}
  */
 async function getInstalledDependencyGraph() {
   const args = ['ls', '--all', '--omit=dev', '--omit=peer', '--long', '--json'];
+  let graph;
   try {
     const {stdout} = await execFileAsync('npm', args, {cwd: ROOT, maxBuffer: EXEC_MAX_BUFFER});
-    return JSON.parse(stdout).dependencies ?? {};
+    graph = JSON.parse(stdout).dependencies ?? {};
   } catch (err) {
-    if (err.stdout) {
-      return JSON.parse(err.stdout).dependencies ?? {};
+    if (!err.stdout) {
+      throw err;
     }
-    throw err;
+    graph = JSON.parse(err.stdout).dependencies ?? {};
   }
+  normalizeDedupedNodes(graph);
+  return graph;
 }
 
 /**
