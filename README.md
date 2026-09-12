@@ -38,14 +38,25 @@ OIDC trusted publishing (composite actions can't request permissions beyond what
 job already has).
 
 **Inputs:**
-- `unbundled-packages` (string, default: `''`) - Space-separated dependency names to exclude from bundling.
+- `unbundled-packages` (string, default: `''`) - Space-separated dependency names to exclude from
+  bundling. `bundleDependencies` filtering only reaches direct dependencies, so an excluded
+  package can still end up bundled as someone else's transitive dependency (a warning is printed
+  when that happens); when that package also has platform-locked native siblings (e.g. sharp's
+  `@img/sharp-*`), those siblings get deleted from every such transitively-bundled copy - keeping
+  the package's own JS and `optionalDependencies` declaration intact so a normal `npm install`
+  still fetches the right one - which is what actually shrinks the bundle in that case.
 - `native-platforms` (string, default: `''`) - Space-separated `os-cpu[-libc]` targets (e.g.
   `linux-x64 linux-arm64 darwin-arm64 win32-x64`) to additionally embed a native
   binary for, on top of whatever the CI runner itself resolved. Applies to every platform-locked
   optional dependency anywhere in the resolved tree (any package whose own `package.json`
   restricts installation via `os`/`cpu` - npm's own convention for per-platform native binary
   packages, e.g. sharp's `@img/sharp-*` or koffi's `@koromix/koffi-*`), not just ones named in
-  `unbundled-packages`.
+  `unbundled-packages`. The opposite pattern - a package that ships every platform's binary
+  bundled together in one `prebuilds/` directory (`node-gyp-build`/`prebuildify`'s own
+  convention, e.g. `bare-fs`) - ships every platform unconditionally, so whenever this input is
+  non-empty, any `prebuilds/<platform>` subdirectory not matching the CI runner's own platform or
+  a configured target here also gets deleted before bundling, trimming otherwise-unavoidable dead
+  weight (e.g. iOS/Android prebuilds pulled in by an unrelated dependency).
 
 **Usage:**
 ```yaml
