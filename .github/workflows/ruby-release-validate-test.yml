@@ -1,0 +1,67 @@
+name: Ruby release validation tests
+on:
+  pull_request:
+    paths:
+      - '.github/actions/ruby-release-validate/**'
+      - '.github/workflows/ruby-release-validate-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/ruby-release-validate/**'
+      - '.github/workflows/ruby-release-validate-test.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ['3.1', '3.4', '4.0']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - name: Install test dependency
+        run: gem install minitest --version '~> 5.0' --no-document
+      - name: Run validator tests
+        run: ruby .github/actions/ruby-release-validate/test/release_test.rb
+      - name: Build consumer fixture
+        shell: bash
+        run: |
+          ruby <<'RUBY'
+          require 'fileutils'
+          require 'rubygems/package'
+          FileUtils.mkdir_p('consumer fixture/lib/example')
+          Dir.chdir('consumer fixture') do
+            File.write('lib/example/version.rb', "VERSION = '1.2.3'\nDATE = '2026-09-13'\n")
+            File.write('.release-please-manifest.json', '{".":"1.2.3"}')
+            File.write('CHANGELOG.md', "## [1.2.3] - 2026-09-13\n")
+            FileUtils.mkdir_p('pkg')
+            spec = Gem::Specification.new do |gem|
+              gem.name = 'example-gem'
+              gem.version = '1.2.3'
+              gem.summary = 'CI fixture'
+              gem.authors = ['Appium']
+              gem.files = ['lib/example/version.rb']
+            end
+            Gem::Package.build(spec, true, false, 'pkg/example-gem-1.2.3.gem')
+          end
+          RUBY
+      - uses: ./.github/actions/ruby-release-validate
+        id: validate
+        with:
+          gem-name: example-gem
+          version-file: lib/example/version.rb
+          working-directory: consumer fixture
+          tag: v1.2.3
+      - name: Check Action output
+        env:
+          GEM_PATH: ${{ steps.validate.outputs.gem-path }}
+        run: |
+          test "$GEM_PATH" = "$GITHUB_WORKSPACE/consumer fixture/pkg/example-gem-1.2.3.gem"
+          test -f "$GEM_PATH"
