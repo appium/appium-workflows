@@ -74,3 +74,79 @@ jobs:
   conventional-commits:
     uses: appium/appium-workflows/.github/workflows/pr-title.yml@main
 ```
+
+## Ruby Actions
+
+### ruby-release-validate
+
+Validates a prebuilt Ruby gem against `VERSION` / `DATE`, the root package in
+`.release-please-manifest.json`, the latest `CHANGELOG.md` entry, and an optional
+release tag. Checks the package name, version, integrity, and presence of the
+version file. Supports historical and Release Please changelog headings and
+RubyGems prerelease normalization (for example `1.2.0-rc.1` → `1.2.0.pre.rc.1`).
+
+Install Ruby 3.1 or newer and build the gem in `pkg/` before calling the action.
+It uses only Ruby standard/default libraries: no additional gem, Bundler setup,
+or token is required by the validator itself. It does not build, tag, or publish.
+
+| Input | Required | Description |
+| --- | --- | --- |
+| `gem-name` | Yes | Expected RubyGems name |
+| `version-file` | Yes | Relative path to a file defining single-quoted `VERSION` and `DATE` constants |
+| `working-directory` | No | Consumer repository root; defaults to `.` |
+| `tag` | No | Exact `v<VERSION>` tag; omit for PR validation |
+
+Output `gem-path` is the absolute path to the validated artifact. Validation
+failure fails the step and emits no artifact output.
+
+```yaml
+- uses: actions/checkout@v7
+- uses: ruby/setup-ruby@v1
+  with:
+    ruby-version: '4.0'
+    bundler-cache: true
+- run: bundle exec rake build
+# Run the repository's tests here, before artifact validation/upload.
+- uses: appium/appium-workflows/.github/actions/ruby-release-validate@main
+  id: package
+  with:
+    gem-name: appium_console
+    version-file: lib/appium_console/version.rb
+    # For publication, pass the tag used to check out the source:
+    # tag: ${{ inputs.tag }}
+- uses: actions/upload-artifact@v4
+  with:
+    name: release-gem
+    path: ${{ steps.package.outputs.gem-path }}
+```
+
+Consumers can pin the action to a reviewed commit SHA instead of `main`.
+The consumer remains responsible for checking out the intended tag, checking its
+ancestry, building/testing, and publishing the verified artifact. The publishing
+workflow and OIDC permissions stay in the consumer repository, so its RubyGems
+Trusted Publisher workflow filename and environment do not change.
+
+| Repository | `gem-name` | `version-file` |
+| --- | --- | --- |
+| ruby_lib_core | appium_lib_core | lib/appium_lib_core/version.rb |
+| ruby_lib | appium_lib | lib/appium_lib/version.rb |
+| appium_capybara | appium_capybara | lib/appium_capybara/version.rb |
+| ruby_console | appium_console | lib/appium_console/version.rb |
+
+To migrate, replace the local `script/release.rb verify` step with this action,
+update artifact references from `gem_path` to `gem-path`, and remove the duplicated
+release helper, helper tests, and steps that run those tests. Keep each repository's
+own tests, Release Please configuration, date annotation, and release runbook.
+The validator's shared tests run in this repository.
+
+For local checks, clone this repository and run the same script against a consumer:
+
+```sh
+ruby /path/to/appium-workflows/.github/actions/ruby-release-validate/release.rb \
+  verify --root /path/to/ruby_console \
+  --gem-name appium_console --version-file lib/appium_console/version.rb
+```
+
+Replace `verify` with `prepare-date` to copy the latest changelog date into the
+version file for local recovery. This is an explicit local edit; normal releases
+use Release Please's date annotation. Neither command pushes or publishes.

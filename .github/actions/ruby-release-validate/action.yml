@@ -1,0 +1,39 @@
+name: Ruby release validation
+description: Validate a built gem against its version, date, Release Please manifest, changelog, and optional tag.
+inputs:
+  gem-name:
+    description: Expected RubyGems package name (for example appium_console).
+    required: true
+  version-file:
+    description: Path to the Ruby VERSION and DATE constants, relative to working-directory.
+    required: true
+  working-directory:
+    description: Consumer repository root, relative to the workspace or absolute.
+    required: false
+    default: '.'
+  tag:
+    description: Expected release tag, such as v4.2.1. Omit when checking a release PR.
+    required: false
+    default: ''
+outputs:
+  gem-path:
+    description: Absolute path to the verified gem, suitable for actions/upload-artifact.
+    value: ${{ steps.validate.outputs.gem-path }}
+runs:
+  using: composite
+  steps:
+    - name: Validate Ruby release
+      id: validate
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RELEASE_ROOT: ${{ inputs.working-directory }}
+        RELEASE_GEM_NAME: ${{ inputs.gem-name }}
+        RELEASE_VERSION_FILE: ${{ inputs.version-file }}
+        RELEASE_TAG: ${{ inputs.tag }}
+      run: |
+        args=(verify --root "$RELEASE_ROOT" --gem-name "$RELEASE_GEM_NAME" --version-file "$RELEASE_VERSION_FILE")
+        if [[ -n "$RELEASE_TAG" ]]; then
+          args+=(--tag "$RELEASE_TAG")
+        fi
+        ruby "$ACTION_PATH/release.rb" "${args[@]}"
