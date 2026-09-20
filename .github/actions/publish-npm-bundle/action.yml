@@ -35,6 +35,14 @@ inputs:
       dead weight (e.g. iOS/Android prebuilds pulled in by an unrelated dependency).
     required: false
     default: ''
+  npm-dist-tag:
+    description: >
+      npm dist-tag to publish under (passed to `npm publish --tag`). Leave empty (the default)
+      for npm's own default of `latest` - correct for a normal stable release, but not for a
+      prerelease version (e.g. `X.Y.Z-beta.N`), which needs an explicit non-`latest` tag such as
+      `beta` here or it would otherwise become `latest` on npm despite being a prerelease.
+    required: false
+    default: ''
 runs:
   using: 'composite'
   steps:
@@ -51,4 +59,11 @@ runs:
     - name: Publish bundled package
       shell: bash
       working-directory: .release-pkg
-      run: npm publish --ignore-scripts "${{ steps.stage.outputs.bundle-filename }}"
+      env:
+        NPM_DIST_TAG: ${{ inputs.npm-dist-tag }}
+      run: |
+        tag_flags=()
+        if [ -n "$NPM_DIST_TAG" ]; then
+          tag_flags=(--tag "$NPM_DIST_TAG")
+        fi
+        npm publish --ignore-scripts "${tag_flags[@]}" "${{ steps.stage.outputs.bundle-filename }}"
