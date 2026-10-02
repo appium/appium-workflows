@@ -2,7 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "Common Renovate config for Appium packages",
   "extends": [
-    "config:js-app",
+    "config:recommended",
     "group:definitelyTyped",
     "security:minimumReleaseAgeNpm",
     ":automergeStableNonMajor",
@@ -11,7 +11,8 @@
     ":enableVulnerabilityAlerts",
     ":rebaseStalePrs",
     ":semanticCommits",
-    ":semanticCommitTypeAll(chore)"
+    ":semanticCommitTypeAll(chore)",
+    "schedule:weekly"
   ],
   "packageRules": [
     {

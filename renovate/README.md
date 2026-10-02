@@ -34,7 +34,7 @@ Appium extension authors--or anyone else--may use this config as well.
 
 ### Presets in Use
 
-- `config:js-app` - everything gets pinned except peer deps (plus a bunch of other reasonable defaults)
+- `config:recommended` - Renovate's recommended defaults (dependencies are not pinned)
 - `group:definitelyTyped` - Groups all `@types/*` packages into one PR
 - `security:minimumReleaseAgeNpm` - Delays updates for 3 days after they have been published to `npm`, protecting against supply chain attacks
   - Packages under the Appium organization are excluded from this
@@ -45,6 +45,7 @@ Appium extension authors--or anyone else--may use this config as well.
 - `:rebaseStalePrs` - Renovate will automatically rebase its PRs
 - `:semanticCommits` - Renovate will use semantic commit messages
 - `:semanticCommitTypeAll(chore)` - Renovate's PRs have the `chore` prefix in its semantic commit message
+- `schedule:weekly` - Renovate runs once a week (before 4am on Monday), so consuming repos don't need their own schedule
 
 ### Additional Config
 
