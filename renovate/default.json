@@ -16,10 +16,12 @@
   ],
   "packageRules": [
     {
-      "description": "Disable minimum release age checks for Appium organization packages",
+      "description": "Disable minimum release age and schedule checks for Appium organization packages",
       "matchSourceUrls": ["https://github.com/appium/**"],
-      "minimumReleaseAge": null
+      "minimumReleaseAge": null,
+      "schedule": ["at any time"]
     }
   ],
+  "rangeStrategy": "update-lockfile",
   "semanticCommitScope": "{{#if parentDir}}{{parentDir}}{{else}}deps{{/if}}"
 }
