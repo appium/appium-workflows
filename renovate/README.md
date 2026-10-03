@@ -48,8 +48,9 @@ Appium extension authors--or anyone else--may use this config as well.
 - `schedule:weekly` - Renovate runs once a week (before 4am on Monday), so consuming repos don't need their own schedule
   - Updates for packages under the Appium organization are excluded from this and can run at any time
 
-### Additional Config
+### Additional Configs
 
+- Use the parent directory for the commit scope if applicable; otherwise use deps. The parent directory is _typically_ only applicable in monorepos.
 - Use the `update-lockfile` strategy instead of the default `auto`. In practice, the only difference is that peer dependency ranges are replaced rather than widened.
 
 ## License
