@@ -50,7 +50,7 @@ Appium extension authors--or anyone else--may use this config as well.
 
 ### Additional Configs
 
-- Use the parent directory for the commit scope if applicable; otherwise use deps. The parent directory is _typically_ only applicable in monorepos.
+- Use the parent directory for the commit scope if applicable; otherwise use `deps`. The parent directory is _typically_ only applicable in monorepos.
 - Use the `update-lockfile` strategy instead of the default `auto`. In practice, the only difference is that peer dependency ranges are replaced rather than widened.
 
 ## License
