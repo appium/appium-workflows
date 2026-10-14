@@ -20,8 +20,7 @@
  */
 
 import {execFile} from 'node:child_process';
-import {existsSync} from 'node:fs';
-import {cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
+import {access, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
@@ -35,18 +34,24 @@ const execFileAsync = promisify(execFile);
 
 /**
  * Locates npm's CLI script next to the running Node binary (Windows vs. unix layout).
- * @returns {string|undefined}
+ * @returns {Promise<string|undefined>}
  */
-function findNpmCli() {
+async function findNpmCli() {
   const nodeDir = path.dirname(process.execPath);
-  return [
+  const candidates = [
     process.env.npm_execpath,
     path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
     path.join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-  ].find((p) => p && /npm-cli\.c?js$/.test(p) && existsSync(p));
+  ].filter((p) => p && /npm-cli\.c?js$/.test(p));
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {}
+  }
 }
 
-const NPM_CLI = findNpmCli();
+const NPM_CLI = await findNpmCli();
 
 /**
  * Runs npm without a shell. On Windows npm is a `.cmd` shim that `execFile` can't spawn,
