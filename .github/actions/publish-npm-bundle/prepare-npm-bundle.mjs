@@ -20,7 +20,7 @@
  */
 
 import {execFile} from 'node:child_process';
-import {cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
+import {access, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
@@ -31,6 +31,43 @@ const RESOLVE_CONCURRENCY = 5;
 const EXEC_MAX_BUFFER = 200 * 1024 * 1024;
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Locates npm's CLI script next to the running Node binary (Windows vs. unix layout).
+ * @returns {Promise<string|undefined>}
+ */
+async function findNpmCli() {
+  const nodeDir = path.dirname(process.execPath);
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].filter((p) => p && /npm-cli\.c?js$/.test(p));
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {}
+  }
+}
+
+const NPM_CLI = await findNpmCli();
+
+/**
+ * Runs npm without a shell. On Windows npm is a `.cmd` shim that `execFile` can't spawn,
+ * so the CLI script is run through the current Node binary instead.
+ * @param {string[]} args
+ * @param {import('node:child_process').ExecFileOptions} [options]
+ */
+function execNpm(args, options) {
+  if (NPM_CLI) {
+    return execFileAsync(process.execPath, [NPM_CLI, ...args], options);
+  }
+  if (process.platform === 'win32') {
+    throw new Error(`Cannot locate npm-cli.js next to ${process.execPath}`);
+  }
+  return execFileAsync('npm', args, options);
+}
 const ROOT = process.cwd();
 const STAGING_DIR = path.join(ROOT, '.release-pkg');
 const BUNDLE_FILENAME = process.env.BUNDLE_FILENAME || 'package.tgz';
@@ -171,7 +208,7 @@ async function resolveDependencyVersion(name, range) {
   } catch {}
 
   try {
-    const {stdout} = await execFileAsync('npm', ['view', `${name}@${range}`, 'version', '--json']);
+    const {stdout} = await execNpm(['view', `${name}@${range}`, 'version', '--json']);
     const parsed = JSON.parse(stdout);
     const resolved = Version.max(Array.isArray(parsed) ? parsed : [parsed]);
     if (resolved) {
@@ -249,7 +286,7 @@ async function getInstalledDependencyGraph() {
   const args = ['ls', '--all', '--omit=dev', '--omit=peer', '--long', '--json'];
   let graph;
   try {
-    const {stdout} = await execFileAsync('npm', args, {cwd: ROOT, maxBuffer: EXEC_MAX_BUFFER});
+    const {stdout} = await execNpm(args, {cwd: ROOT, maxBuffer: EXEC_MAX_BUFFER});
     graph = JSON.parse(stdout).dependencies ?? {};
   } catch (err) {
     if (!err.stdout) {
@@ -469,8 +506,7 @@ class NativePlatformManager {
     const scratchDir = await mkdtemp(path.join(tmpdir(), 'native-platform-'));
     try {
       await writeFile(path.join(scratchDir, 'package.json'), JSON.stringify({name: 'scratch', version: '0.0.0'}));
-      await execFileAsync(
-        'npm',
+      await execNpm(
         ['install', `${name}@${range}`, '--force', '--no-audit', '--no-fund'],
         {cwd: scratchDir, maxBuffer: EXEC_MAX_BUFFER},
       );
@@ -651,8 +687,7 @@ class NativePlatformManager {
 async function packBundle() {
   await rm(STAGING_DIR, {recursive: true, force: true});
   await mkdir(STAGING_DIR, {recursive: true});
-  const {stdout} = await execFileAsync(
-    'npm',
+  const {stdout} = await execNpm(
     ['pack', '--ignore-scripts', '--pack-destination', STAGING_DIR, '--json'],
     {cwd: ROOT, maxBuffer: EXEC_MAX_BUFFER},
   );
